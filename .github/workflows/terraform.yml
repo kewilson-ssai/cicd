@@ -1,0 +1,66 @@
+name: isnp/gsai/cicd
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  plan_job:
+    runs-on: ubuntu-latest
+    container:
+      image: registry.gitlab.com/isnp/gsai/devops/terraform_build_image/terraform_build_image:latest
+      options: "--entrypoint /bin/bash"
+    if: # Unable to map conditional expression to GitHub Actions equivalent
+    env:
+      TF_IN_AUTOMATION: 'false'
+      TENANT: staging
+      TF_PHASE: ''
+      ZONE: us-west5
+      TF_DIR: "${{ github.workspace }}"
+      CLOUD: gcp
+      GOOGLE_APPLICATION_CREDENTIALS: "${{ github.workspace }}/.gcp_temp_cred.json"
+      GOOGLE_PROJECT: gsai-master
+      SERVICE_ACCOUNT_EMAIL: gitlab-wif@gsai-master.iam.gserviceaccount.com
+      GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: gitlab-wif@gsai-master.iam.gserviceaccount.com
+      GOOGLE_SERVICE_ACCOUNT: gitlab-wif@gsai-master.iam.gserviceaccount.com
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - run: "echo ${GT} > ${{ github.workspace }}/.ci_job_jwt_file\ngcloud iam workload-identity-pools create-cred-config ${GCP_WORKLOAD_IDENTITY_PROVIDER} --service-account=\"${SERVICE_ACCOUNT_EMAIL}\" --output-file=${GOOGLE_APPLICATION_CREDENTIALS} --credential-source-file=${{ github.workspace }}/.ci_job_jwt_file\nexport GOOGLE_APPLICATION_CREDENTIALS\nexport ACCESS_TOKEN=$(gcloud auth application-default print-access-token)\nexport CLOUDSDK_AUTH_ACCESS_TOKEN=$ACCESS_TOKEN\necho \"Setting project context: ${GOOGLE_PROJECT}\"\ngcloud config set project ${GOOGLE_PROJECT}   \necho \"Checking out ${TENANT_PROJECT}\"\nmkdir -p ${{ github.workspace }}/${TENANT_PROJECT}\ngit clone https://gitlab-ci-token:${{ github.token }}@gitlab.com/isnp/${TENANT_PROJECT}.git ${TENANT_PROJECT}\n\n# Surface Databricks env for provider (no-op if not used in the Terraform config)\nexport DATABRICKS_OIDC_TOKEN_ENV=\"DATABRICKS_OIDC_TOKEN\"\nexport DATABRICKS_AUTH_TYPE=env-oidc\nexport DATABRICKS_HOST=\"https://accounts.gcp.databricks.com\"\n\n#gcloud auth activate-service-account --key-file=\"$GOOGLE_APPLICATION_CREDENTIALS\"\ngcloud auth print-access-token --impersonate-service-account=$GOOGLE_SERVICE_ACCOUNT\n    \necho \"--- databricks auth describe ---\"\ndatabricks auth describe || true\n\necho \"Fetching cluster information...\"\nset +e\nCLUSTER_INFO=$(gcloud container clusters list --format=\"value(name,zone)\" --limit=1)\nCLUSTER_NAME=$(echo $CLUSTER_INFO | awk '{print $1}')\nCLUSTER_ZONE=$(echo $CLUSTER_INFO | awk '{print $2}')\nset -e\n[ -z \"$CLUSTER_NAME\" ] && echo \"No cluster found. Skipping configuration.\" || (echo \"Cluster identified: $CLUSTER_NAME\" && echo \"Fetching cluster credentials...\" && gcloud container clusters get-credentials $CLUSTER_NAME --zone $CLUSTER_ZONE && echo \"Configuration complete. .kube/config is ready.\")\n"
+    - run: |
+        export ACCESS_TOKEN=$(gcloud auth application-default print-access-token --impersonate-service-account=$GOOGLE_SERVICE_ACCOUNT)
+        export CLOUDSDK_AUTH_ACCESS_TOKEN=$ACCESS_TOKEN
+        echo "Planning ${TENANT}${TF_PHASE}"
+        export TF_DATA_DIR=/tmp/${TENANT}/data${TF_PHASE}
+        mkdir -p ${TF_DATA_DIR}
+        cd $TF_DIR
+        terraform init -reconfigure --backend-config=${{ github.workspace }}/${TENANT_PROJECT}/${TENANT}/${CLOUD}/${TENANT}${TF_PHASE}.tfbackend --var-file=${{ github.workspace }}/${TENANT_PROJECT}/${TENANT}/${CLOUD}/${TENANT}.tfvars
+        terraform plan -input=false --var-file=${{ github.workspace }}/${TENANT_PROJECT}/${TENANT}/${CLOUD}/${TENANT}.tfvars
+  apply_job:
+    needs: plan_job
+    runs-on: ubuntu-latest
+    container:
+      image: registry.gitlab.com/isnp/gsai/devops/terraform_build_image/terraform_build_image:latest
+      options: "--entrypoint /bin/bash"
+    if: # Unable to map conditional expression to GitHub Actions equivalent
+    env:
+      TF_IN_AUTOMATION: 'false'
+      TENANT: staging
+      TF_PHASE: ''
+      ZONE: us-west5
+      TF_DIR: "${{ github.workspace }}"
+      CLOUD: gcp
+      GOOGLE_APPLICATION_CREDENTIALS: "${{ github.workspace }}/.gcp_temp_cred.json"
+      GOOGLE_PROJECT: gsai-master
+      SERVICE_ACCOUNT_EMAIL: gitlab-wif@gsai-master.iam.gserviceaccount.com
+      GOOGLE_IMPERSONATE_SERVICE_ACCOUNT: gitlab-wif@gsai-master.iam.gserviceaccount.com
+      GOOGLE_SERVICE_ACCOUNT: gitlab-wif@gsai-master.iam.gserviceaccount.com
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - run: "echo ${GT} > ${{ github.workspace }}/.ci_job_jwt_file\ngcloud iam workload-identity-pools create-cred-config ${GCP_WORKLOAD_IDENTITY_PROVIDER} --service-account=\"${SERVICE_ACCOUNT_EMAIL}\" --output-file=${GOOGLE_APPLICATION_CREDENTIALS} --credential-source-file=${{ github.workspace }}/.ci_job_jwt_file\nexport GOOGLE_APPLICATION_CREDENTIALS\nexport ACCESS_TOKEN=$(gcloud auth application-default print-access-token)\nexport CLOUDSDK_AUTH_ACCESS_TOKEN=$ACCESS_TOKEN\necho \"Setting project context: ${GOOGLE_PROJECT}\"\ngcloud config set project ${GOOGLE_PROJECT}   \necho \"Checking out ${TENANT_PROJECT}\"\nmkdir -p ${{ github.workspace }}/${TENANT_PROJECT}\ngit clone https://gitlab-ci-token:${{ github.token }}@gitlab.com/isnp/${TENANT_PROJECT}.git ${TENANT_PROJECT}\n\n# Surface Databricks env for provider (no-op if not used in the Terraform config)\nexport DATABRICKS_OIDC_TOKEN_ENV=\"DATABRICKS_OIDC_TOKEN\"\nexport DATABRICKS_AUTH_TYPE=env-oidc\nexport DATABRICKS_HOST=\"https://accounts.gcp.databricks.com\"\n\n#gcloud auth activate-service-account --key-file=\"$GOOGLE_APPLICATION_CREDENTIALS\"\ngcloud auth print-access-token --impersonate-service-account=$GOOGLE_SERVICE_ACCOUNT\n    \necho \"--- databricks auth describe ---\"\ndatabricks auth describe || true\n\necho \"Fetching cluster information...\"\nset +e\nCLUSTER_INFO=$(gcloud container clusters list --format=\"value(name,zone)\" --limit=1)\nCLUSTER_NAME=$(echo $CLUSTER_INFO | awk '{print $1}')\nCLUSTER_ZONE=$(echo $CLUSTER_INFO | awk '{print $2}')\nset -e\n[ -z \"$CLUSTER_NAME\" ] && echo \"No cluster found. Skipping configuration.\" || (echo \"Cluster identified: $CLUSTER_NAME\" && echo \"Fetching cluster credentials...\" && gcloud container clusters get-credentials $CLUSTER_NAME --zone $CLUSTER_ZONE && echo \"Configuration complete. .kube/config is ready.\")\n"
+    - run: |
+        export ACCESS_TOKEN=$(gcloud auth application-default print-access-token --impersonate-service-account=$GOOGLE_SERVICE_ACCOUNT)
+        export CLOUDSDK_AUTH_ACCESS_TOKEN=$ACCESS_TOKEN
+        echo "Applying ${TENANT} ${GCP_WORKLOAD_IDENTITY_PROVIDER} ${GCP_WF_SERVICE_ACCOUNT_EMAIL}"
+        export TF_DATA_DIR=/tmp/${TENANT}/data${TF_PHASE}
+        mkdir -p ${TF_DATA_DIR}
+        cd $TF_DIR
+        terraform init -reconfigure --backend-config=${{ github.workspace }}/${TENANT_PROJECT}/${TENANT}/${CLOUD}/${TENANT}${TF_PHASE}.tfbackend --var-file=${{ github.workspace }}/${TENANT_PROJECT}/${TENANT}/${CLOUD}/${TENANT}.tfvars
+        terraform apply -auto-approve -input=false --var-file=${{ github.workspace }}/${TENANT_PROJECT}/${TENANT}/${CLOUD}/${TENANT}.tfvars

@@ -1,0 +1,479 @@
+# Reusable workflow: multi-arch Docker image build, manifest, scan, and optional test.
+# Centralises all build logic for image projects in the spheresmithai org.
+#
+# Usage (caller workflow — pin via GSAI_CICD_VERSION org/repo variable):
+#
+#   jobs:
+#     build:
+#       uses: spheresmithai/cicd/.github/workflows/image_build.yml@${{ vars.GSAI_CICD_VERSION }}
+#       with:
+#         image_name: my-image
+#       secrets: inherit
+#
+# For multi-version Python builds, pass a JSON array:
+#       with:
+#         image_name: python-build-image
+#         python_versions: '["3.11","3.13"]'
+#         extra_build_args_template: '--build-arg PYTHON_VERSION={version} --build-arg BUILD_ENV=prod'
+
+name: image_build (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: 'Docker image name (e.g. python-build-image)'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      version_override:
+        description: 'Pin a specific VERSION; skips auto-versioning when set'
+        required: false
+        type: string
+        default: ''
+      python_container:
+        description: 'Python container image used for the versioning job'
+        required: false
+        type: string
+        default: 'python:3.13'
+      python_version:
+        description: 'Python version to use for build/versioning (default: 3.13)'
+        required: false
+        type: string
+        default: '3.13'
+      extra_build_args:
+        description: 'Additional --build-arg flags for single-image builds'
+        required: false
+        type: string
+        default: ''
+      python_versions:
+        description: >
+          JSON array of Python versions to build in parallel (e.g. '["3.11","3.13"]').
+          When set, each version becomes a separate image tag suffix and manifest.
+          Leave empty for a single-image build.
+        required: false
+        type: string
+        default: ''
+      extra_build_args_template:
+        description: >
+          Build-arg template used when python_versions is set.
+          Use {version} as a placeholder, e.g.
+          '--build-arg PYTHON_VERSION={version} --build-arg BUILD_ENV=prod'
+        required: false
+        type: string
+        default: '--build-arg PYTHON_VERSION={version}'
+      run_container_test:
+        description: 'Run tests/test.sh against the built image after the manifest step'
+        required: false
+        type: boolean
+        default: false
+      test_script:
+        description: 'Path to the test script (relative to repo root)'
+        required: false
+        type: string
+        default: 'tests/test.sh'
+    secrets:
+      DOCKER_REGISTRY:
+        required: true
+      DOCKER_REGISTRY_USER:
+        required: true
+      DOCKER_REGISTRY_PASSWORD:
+        required: true
+      DHI_USER:
+        required: false
+      DHI_TOKEN:
+        required: false
+
+env:
+  BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
+
+jobs:
+  # ── Versioning ──────────────────────────────────────────────────────────────
+  version:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.python_container || vars.PYTHON_CONTAINER || (inputs.python_version && format('python:{0}', inputs.python_version)) || (vars.PYTHON_VERSION && format('python:{0}', vars.PYTHON_VERSION)) || 'python:3.13' }}
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
+      project_name: ${{ steps.set-version.outputs.project_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install poetry
+        run: pip install poetry --no-cache-dir
+
+      - name: Compute version
+        id: set-version
+        run: |
+          if [ -n "${{ inputs.version_override }}" ]; then
+            VERSION="${{ inputs.version_override }}"
+          else
+            REF_NAME="${{ github.ref_name }}"
+            CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+            DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+            IS_PROTECTED="false"
+            if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || echo "${REF_NAME}" | grep -qE '^patch-'; then
+              IS_PROTECTED="true"
+            fi
+
+            if [ "${IS_PROTECTED}" = "true" ]; then
+              if echo "${REF_NAME}" | grep -qE '^patch-'; then
+                poetry version patch
+              else
+                poetry version minor
+              fi
+              VERSION=$(poetry version --short)
+              TOP_LEVEL_PATTERN="^(${DEFAULT_BRANCH}|patch-.*)$"
+              if ! echo "${REF_NAME}" | grep -qE "${TOP_LEVEL_PATTERN}"; then
+                MAJOR=$(echo $VERSION | cut -d '.' -f1)
+                MINOR=$(echo $VERSION | cut -d '.' -f2)
+                PATCH=$(echo $VERSION | cut -d '.' -f3)
+                VERSION="${MAJOR}.${MINOR}-${CLEAN_BRANCH}.${PATCH}"
+              fi
+            else
+              poetry version prepatch
+              VERSION=$(poetry version --short | sed 's/a/-a/')
+              VERSION="${VERSION}-${CLEAN_BRANCH}"
+            fi
+          fi
+
+          PROJECT_NAME=$(poetry version | awk '{print $1}')
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "project_name=${PROJECT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Computed VERSION=${VERSION} for PROJECT_NAME=${PROJECT_NAME}"
+
+  # ── Multi-arch Docker Build (single image) ──────────────────────────────────
+  # Runs when python_versions is NOT set.
+  container-build:
+    needs: version
+    if: ${{ inputs.python_versions == '' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target_platform: linux/amd64
+            runner: self-hosted
+            platform_slug: linux-amd64
+          - target_platform: linux/arm64
+            runner: [self-hosted, arm64]
+            platform_slug: linux-arm64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=moby/buildkit:latest
+
+      - name: Login to DHI registry (if credentials provided)
+        if: ${{ secrets.DHI_USER != '' && secrets.DHI_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DHI_USER }}
+          password: ${{ secrets.DHI_TOKEN }}
+
+      - name: Login to local Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Build and push arch-specific image
+        run: |
+          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          ARCH_TAG="${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${{ matrix.platform_slug }}"
+          CACHE_IMAGE="${REGISTRY}/${{ inputs.image_name }}:cache-${{ matrix.platform_slug }}"
+
+          echo "Building ${{ matrix.target_platform }} → ${ARCH_TAG}"
+
+          docker buildx build \
+            --platform ${{ matrix.target_platform }} \
+            --push \
+            --provenance=false \
+            --sbom=false \
+            --cache-from "${CACHE_IMAGE}" \
+            --cache-to type=inline \
+            -t "${ARCH_TAG}" \
+            -f ${{ inputs.dockerfile }} \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            ${{ inputs.extra_build_args }} \
+            .
+
+  # ── Multi-arch Docker Build (multi-Python-version) ──────────────────────────
+  # Runs when python_versions IS set (e.g. '["3.11","3.13"]').
+  container-build-matrix:
+    needs: version
+    if: ${{ inputs.python_versions != '' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        python_version: ${{ fromJson(inputs.python_versions) }}
+        include:
+          - runner: self-hosted
+            target_platform: linux/amd64
+            platform_slug: linux-amd64
+          - runner: [self-hosted, arm64]
+            target_platform: linux/arm64
+            platform_slug: linux-arm64
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=moby/buildkit:latest
+
+      - name: Login to DHI registry (if credentials provided)
+        if: ${{ secrets.DHI_USER != '' && secrets.DHI_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DHI_USER }}
+          password: ${{ secrets.DHI_TOKEN }}
+
+      - name: Login to local Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Build and push arch-specific image
+        run: |
+          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          PY_VER="${{ matrix.python_version }}"
+          ARCH_TAG="${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${PY_VER}-${{ matrix.platform_slug }}"
+          CACHE_IMAGE="${REGISTRY}/${{ inputs.image_name }}:cache-${PY_VER}-${{ matrix.platform_slug }}"
+
+          # Expand the {version} placeholder in the args template
+          BUILD_ARGS=$(echo "${{ inputs.extra_build_args_template }}" | sed "s/{version}/${PY_VER}/g")
+
+          echo "Building Python ${PY_VER} for ${{ matrix.target_platform }} → ${ARCH_TAG}"
+
+          docker buildx build \
+            --platform ${{ matrix.target_platform }} \
+            --push \
+            --provenance=false \
+            --sbom=false \
+            --cache-from "${CACHE_IMAGE}" \
+            --cache-to type=inline \
+            -t "${ARCH_TAG}" \
+            -f ${{ inputs.dockerfile }} \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            ${BUILD_ARGS} \
+            .
+
+  # ── Multi-arch Manifest (single image) ─────────────────────────────────────
+  container-manifest:
+    needs:
+      - version
+      - container-build
+    if: ${{ inputs.python_versions == '' }}
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to local Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Create and push multi-arch manifest
+        run: |
+          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REF_NAME="${{ github.ref_name }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+
+          if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+            LATEST_TAG="latest"
+          else
+            LATEST_TAG="${CLEAN_BRANCH}-latest"
+          fi
+
+          IS_PROTECTED="false"
+          if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || echo "${REF_NAME}" | grep -qE '^patch-'; then
+            IS_PROTECTED="true"
+          fi
+
+          TARGET_TAGS="-t ${REGISTRY}/${{ inputs.image_name }}:${LATEST_TAG}"
+          if [ "${IS_PROTECTED}" = "true" ]; then
+            TARGET_TAGS="${TARGET_TAGS} -t ${REGISTRY}/${{ inputs.image_name }}:${VERSION}"
+          fi
+
+          echo "Creating manifest with tags: ${TARGET_TAGS}"
+          docker buildx imagetools create ${TARGET_TAGS} \
+            "${REGISTRY}/${{ inputs.image_name }}:${VERSION}-linux-amd64" \
+            "${REGISTRY}/${{ inputs.image_name }}:${VERSION}-linux-arm64"
+
+  # ── Multi-arch Manifest (multi-Python-version) ──────────────────────────────
+  container-manifest-matrix:
+    needs:
+      - version
+      - container-build-matrix
+    if: ${{ inputs.python_versions != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python_version: ${{ fromJson(inputs.python_versions) }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to local Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Create and push multi-arch manifest for Python ${{ matrix.python_version }}
+        run: |
+          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          PY_VER="${{ matrix.python_version }}"
+          REF_NAME="${{ github.ref_name }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+
+          if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+            LATEST_TAG="${PY_VER}-latest"
+          else
+            LATEST_TAG="${PY_VER}-${CLEAN_BRANCH}-latest"
+          fi
+
+          IS_PROTECTED="false"
+          if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || echo "${REF_NAME}" | grep -qE '^patch-'; then
+            IS_PROTECTED="true"
+          fi
+
+          TARGET_TAGS="-t ${REGISTRY}/${{ inputs.image_name }}:${LATEST_TAG}"
+          if [ "${IS_PROTECTED}" = "true" ]; then
+            TARGET_TAGS="${TARGET_TAGS} -t ${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${PY_VER}"
+          fi
+
+          echo "Creating manifest for Python ${PY_VER} with tags: ${TARGET_TAGS}"
+          docker buildx imagetools create ${TARGET_TAGS} \
+            "${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${PY_VER}-linux-amd64" \
+            "${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${PY_VER}-linux-arm64"
+
+  # ── Optional Container Test ─────────────────────────────────────────────────
+  container-test:
+    needs:
+      - version
+      - container-manifest
+    if: ${{ inputs.run_container_test && inputs.python_versions == '' }}
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to local Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Run image tests
+        run: |
+          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REF_NAME="${{ github.ref_name }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          IS_PROTECTED="false"
+          if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || echo "${REF_NAME}" | grep -qE '^patch-'; then
+            IS_PROTECTED="true"
+          fi
+
+          if [ "${IS_PROTECTED}" = "true" ]; then
+            TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${VERSION}"
+          else
+            CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+            TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${CLEAN_BRANCH}-latest"
+          fi
+
+          echo "Testing image: ${TEST_IMAGE}"
+          docker pull "${TEST_IMAGE}"
+          IMAGE="${TEST_IMAGE}" ${{ inputs.test_script }}
+
+  # ── Security Scan ───────────────────────────────────────────────────────────
+  container-scan:
+    needs:
+      - version
+      - container-manifest
+    # Also trigger after matrix manifest when python_versions is set
+    if: >
+      always() &&
+      (needs.container-manifest.result == 'success' || needs.container-manifest.result == 'skipped') &&
+      (
+        github.ref_name == github.event.repository.default_branch ||
+        startsWith(github.ref_name, 'patch-') ||
+        github.event_name == 'schedule'
+      )
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Login to local Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USER }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: Install Syft and Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Scan image
+        run: |
+          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REF_NAME="${{ github.ref_name }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          IS_PROTECTED="false"
+          if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || echo "${REF_NAME}" | grep -qE '^patch-'; then
+            IS_PROTECTED="true"
+          fi
+
+          if [ "${IS_PROTECTED}" = "true" ]; then
+            SCAN_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${VERSION}"
+          else
+            CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+            SCAN_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${CLEAN_BRANCH}-latest"
+          fi
+
+          echo "Scanning image: ${SCAN_IMAGE}"
+          syft "${SCAN_IMAGE}" -o spdx-json | grype > scan_results.txt
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-results-${{ inputs.image_name }}
+          path: scan_results.txt
+          retention-days: 7

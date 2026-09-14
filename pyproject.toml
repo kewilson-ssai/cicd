@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "cicd"
+version = "0.99.0"
+description = ""
+authors = ["kewilson <kewilson@growthsphere.ai>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

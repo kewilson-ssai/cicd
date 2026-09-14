@@ -1,0 +1,35 @@
+name: isnp/gsai/cicd
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  sonarcloud-check:
+    needs: test_python_module
+    runs-on: ubuntu-latest
+    container:
+      image: sonarsource/sonar-scanner-cli:latest
+      options: "--entrypoint "
+    if: (github.event_type == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    env:
+      SONAR_USER_HOME: "${{ github.workspace }}/.sonar"
+      GIT_DEPTH: '0'
+    steps:
+    - uses: actions/checkout@v4.1.0
+      with:
+        fetch-depth: '0'
+    - uses: actions/cache@v3.3.2
+      with:
+        path: ".sonar/cache"
+        key: "${{ github.job }}"
+    - run: |
+        if [ ! -f sonar-project.properties ]; then
+          echo "sonar.exclusions=**/*.xml,**/*.ipynb,**/*.yaml,**/*.yml,**/*.md,**/*.toml,**/*.json" > sonar-project.properties
+        fi
+        EXTRA_ARGS=()
+        [ -f coverage.xml ] && EXTRA_ARGS+=("-Dsonar.python.coverage.reportPaths=coverage.xml")
+        [ -f test-results.xml ] && EXTRA_ARGS+=("-Dsonar.python.xunit.reportPath=test-results.xml")
+        sonar-scanner \
+          -Dsonar.projectKey=${SONAR_PROJECT_KEY_ENV} \
+          -Dsonar.organization=${SONAR_ORGANIZATION_ENV} \
+          -Dsonar.projectVersion=${{ github.sha }} \
+          ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}

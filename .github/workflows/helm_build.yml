@@ -1,0 +1,100 @@
+name: isnp/gsai/cicd
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  helm-test:
+    runs-on: ubuntu-latest
+    container:
+      image: alpine/helm:latest
+      options: "--entrypoint "
+    if: # Unable to map conditional expression to GitHub Actions equivalent
+#         !($SKIP_TEST) || (always() && $VERSION) || (always() && ${{ github.ref }} == $CI_DEFAULT_BRANCH) || (always() && ${{ github.ref }} =~ /^patch-/) || (always() && ${{ github.event_name }} == 'merge_request_event' && ( ${{ github.event.pull_request.base.ref }} == $CI_DEFAULT_BRANCH || ${{ github.event.pull_request.base.ref }} =~ /^patch-/ )) || false
+    services:
+      docker:dind:
+        image: docker:dind
+    env:
+      GCP_PROJECT_ID: gsai-master
+      GCP_REGION: us
+      GCP_REPO: master-repo-dr
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - run: helm plugin install https://github.com/quintush/helm-unittest --verify=false
+    - run: helm repo add --username ${CI_REGISTRY_USER} --password ${CI_REGISTRY_PASSWORD} cplatform https://gitlab.com/api/v4/projects/66932229/packages/helm/stable
+    - run: cd test_chart
+    - run: helm dependency update
+    - run: helm unittest .
+  helm-publish:
+    needs: helm-test
+    runs-on: ubuntu-latest
+    container:
+      image: alpine/helm:latest
+      options: "--entrypoint "
+    if: # Unable to map conditional expression to GitHub Actions equivalent
+#         (always() && $VERSION) || (always() && ( ${{ github.ref }} == $CI_DEFAULT_BRANCH || ${{ github.ref }} =~ /^patch-/ || ${{ github.ref }} =~ /^release/ )) || false
+    services:
+      docker:dind:
+        image: docker:dind
+    env:
+      GCP_PROJECT_ID: gsai-master
+      GCP_REGION: us
+      GCP_REPO: master-repo-dr
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: noop_version_passthrough
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: prerelease_tag
+    - run: helm repo add --username ${CI_REGISTRY_USER} --password ${CI_REGISTRY_PASSWORD} cplatform https://gitlab.com/api/v4/projects/66932229/packages/helm/stable
+    - run: cd chart
+    - run: helm dependency update
+    - run: helm package --version ${VERSION} --app-version ${VERSION} .
+    - run: curl --request POST --user ${CI_REGISTRY_USER}:${CI_REGISTRY_PASSWORD} --form "chart=@${{ github.event.repository.name }}-${VERSION}.tgz" "${{ github.api_url }}/projects/${{ github.repository }}/packages/helm/api/stable/charts"
+    - uses: actions/upload-artifact@v4.1.0
+      if: success()
+      with:
+        name: "${{ github.job }}"
+        path: chart/*.tgz
+  publish-gcp-helm:
+    needs: helm-publish
+    runs-on: ubuntu-latest
+    container:
+      image: docker:latest
+    if: # Unable to map conditional expression to GitHub Actions equivalent
+#         $GCP_PUBLISH == "true" && $CI_COMMIT_REF_PROTECTED == "true" || false
+    services:
+      docker:dind:
+        image: docker:dind
+    env:
+      GCP_PROJECT_ID: gsai-master
+      GCP_REGION: us
+      GCP_REPO: master-repo-dr
+      GCP_PUBLISH: 'false'
+    steps:
+    - uses: actions/checkout@v4.1.0
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: noop_version_passthrough
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: prerelease_tag
+    - uses: actions/download-artifact@v4.1.0
+      with:
+        name: helm-publish
+    - run: apk add --no-cache python3 py3-pip curl tar jq bash
+    - run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    - run: curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz
+    - run: tar -xzf google-cloud-cli-linux-x86_64.tar.gz
+    - run: mv google-cloud-sdk /usr/local/gcloud
+    - run: export PATH=$PATH:/usr/local/gcloud/bin
+    - run: gcloud version
+    - run: echo "Publishing Helm chart ${VERSION} to GCP ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPO}"
+    - run: |
+        export PATH=$PATH:/usr/local/gcloud/bin
+        if [ -z "${GCP_SA}" ]; then echo "ERROR: GCP_SA is not set"; exit 1; fi
+        if [ -z "${GCP_SA_CREDS}" ] || [ ! -f "${GCP_SA_CREDS}" ]; then echo "ERROR: GCP_SA_CREDS is not set or is not a file-type variable"; exit 1; fi
+        gcloud auth activate-service-account "${GCP_SA}" --key-file="${GCP_SA_CREDS}"
+        gcloud auth print-access-token | helm registry login -u oauth2accesstoken --password-stdin ${GCP_REGION}-docker.pkg.dev
+        helm push chart/${{ github.event.repository.name }}-${VERSION}.tgz oci://${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPO}
