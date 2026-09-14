@@ -51,12 +51,12 @@ on:
         type: string
         default: 'ubuntu-latest'
       runs_on_arm64:
-        description: 'Runner environment for arm64 build jobs (default: ubuntu-24.04-arm)'
+        description: 'Runner environment for arm64 build jobs (default: ubuntu-latest)'
         required: false
         type: string
-        default: 'ubuntu-24.04-arm'
+        default: 'ubuntu-latest'
       runs_on:
-        description: 'Legacy/fallback runner environment for build jobs (overrides runs_on_amd64 if set)'
+        description: 'Legacy/fallback runner environment for build jobs (overrides runs_on_amd64 and runs_on_arm64 if set)'
         required: false
         type: string
         default: ''
@@ -172,8 +172,23 @@ jobs:
           python3 -c "
           import json, os
           versions_str = '''${{ inputs.python_versions }}'''.strip()
-          runs_on_amd64 = '''${{ inputs.runs_on_amd64 || inputs.runs_on || 'ubuntu-latest' }}'''.strip()
-          runs_on_arm64 = '''${{ inputs.runs_on_arm64 || 'ubuntu-24.04-arm' }}'''.strip()
+
+          def parse_runner(val):
+              val = val.strip()
+              if not val:
+                  return None
+              try:
+                  parsed = json.loads(val)
+                  if isinstance(parsed, (list, str)):
+                      return parsed
+              except Exception:
+                  pass
+              return val
+
+          runs_on_global = parse_runner('''${{ inputs.runs_on }}''')
+          runs_on_amd64 = parse_runner('''${{ inputs.runs_on_amd64 }}''') or runs_on_global or 'ubuntu-latest'
+          runs_on_arm64 = parse_runner('''${{ inputs.runs_on_arm64 }}''') or runs_on_global or 'ubuntu-latest'
+
           if versions_str:
               try:
                   versions = json.loads(versions_str)
@@ -221,7 +236,7 @@ jobs:
             runner: ${{ inputs.runs_on_amd64 || inputs.runs_on || 'ubuntu-latest' }}
           - target_platform: linux/arm64
             platform_slug: linux-arm64
-            runner: ${{ inputs.runs_on_arm64 || 'ubuntu-24.04-arm' }}
+            runner: ${{ inputs.runs_on_arm64 || inputs.runs_on || 'ubuntu-latest' }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
