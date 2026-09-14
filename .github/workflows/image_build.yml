@@ -522,6 +522,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Enable containerd image store for multi-platform support
+        run: |
+          sudo bash -c '
+          mkdir -p /etc/docker
+          if [ -s /etc/docker/daemon.json ]; then
+            python3 -c "import json; d=json.load(open(\"/etc/docker/daemon.json\")); d.setdefault(\"features\", {})[\"containerd-snapshotter\"]=True; json.dump(d, open(\"/etc/docker/daemon.json\", \"w\"), indent=2)"
+          else
+            echo "{\"features\": {\"containerd-snapshotter\": true}}" > /etc/docker/daemon.json
+          fi
+          systemctl restart docker || service docker restart || true
+          '
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Login to Docker registry
         if: env.LOGIN_USER != '' && env.LOGIN_PASS != ''
         uses: docker/login-action@v3
@@ -548,6 +563,68 @@ jobs:
           else
             CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
             TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${CLEAN_BRANCH}-latest"
+          fi
+
+          echo "Testing image: ${TEST_IMAGE}"
+          docker pull "${TEST_IMAGE}"
+          IMAGE="${TEST_IMAGE}" ${{ inputs.test_script }}
+
+  # ── Optional Container Test (multi-Python-version) ──────────────────────────
+  container-test-matrix:
+    needs:
+      - version
+      - container-manifest-matrix
+    if: ${{ inputs.run_container_test && inputs.python_versions != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.version.outputs.manifest_matrix) }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable containerd image store for multi-platform support
+        run: |
+          sudo bash -c '
+          mkdir -p /etc/docker
+          if [ -s /etc/docker/daemon.json ]; then
+            python3 -c "import json; d=json.load(open(\"/etc/docker/daemon.json\")); d.setdefault(\"features\", {})[\"containerd-snapshotter\"]=True; json.dump(d, open(\"/etc/docker/daemon.json\", \"w\"), indent=2)"
+          else
+            echo "{\"features\": {\"containerd-snapshotter\": true}}" > /etc/docker/daemon.json
+          fi
+          systemctl restart docker || service docker restart || true
+          '
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Login to Docker registry
+        if: env.LOGIN_USER != '' && env.LOGIN_PASS != ''
+        uses: docker/login-action@v3
+        env:
+          LOGIN_USER: ${{ secrets.DOCKER_REGISTRY_USER || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && github.actor || '' }}
+          LOGIN_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && secrets.GITHUB_TOKEN || '' }}
+        with:
+          registry: ${{ needs.version.outputs.registry_host || 'ghcr.io' }}
+          username: ${{ env.LOGIN_USER }}
+          password: ${{ env.LOGIN_PASS }}
+
+      - name: Run image tests for Python ${{ matrix.python_version }}
+        run: |
+          REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
+          PY_VER="${{ matrix.python_version }}"
+          REF_NAME="${{ github.ref_name }}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          IS_PROTECTED="false"
+          if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || echo "${REF_NAME}" | grep -qE '^patch-'; then
+            IS_PROTECTED="true"
+          fi
+
+          if [ "${IS_PROTECTED}" = "true" ]; then
+            TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${PY_VER}"
+          else
+            CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+            TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${PY_VER}-${CLEAN_BRANCH}-latest"
           fi
 
           echo "Testing image: ${TEST_IMAGE}"
