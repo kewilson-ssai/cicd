@@ -220,7 +220,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        python_version: ${{ fromJson(inputs.python_versions || '[]') }}
+        python_version: ${{ fromJson(inputs.python_versions || '["3.13"]') }}
         include:
           - runner: self-hosted
             target_platform: linux/amd64
@@ -338,7 +338,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python_version: ${{ fromJson(inputs.python_versions || '[]') }}
+        python_version: ${{ fromJson(inputs.python_versions || '["3.13"]') }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:

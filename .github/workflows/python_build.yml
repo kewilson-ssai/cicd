@@ -87,10 +87,6 @@ jobs:
       TEAMS_WEBHOOK_URL: https://default068aeee17ab641db8b6949fd4421d5.f8.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/25/workflows/34c094c552b446629cdad4759054e10c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=3OpokvKh7eFsjk0WWU-TVAyxJGVe8QYRh1wEz2i4zSI
     steps:
     - uses: actions/checkout@v4.1.0
-    - run:
-        "!reference":
-        - ".default_google_vertex"
-        - before_script
     - run: |
         set -e
         if [ "$USE_POETRY" = "TRUE" ]; then

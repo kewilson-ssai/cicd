@@ -1,79 +1,119 @@
+# Reusable workflow: release, tag, and publish GitHub release for NodeJS packages.
+# Centralises release logic for NodeJS repositories.
+#
+# Usage (caller workflow):
+#
+#   jobs:
+#     release:
+#       permissions:
+#         contents: write
+#       uses: kewilson-ssai/cicd/.github/workflows/release_nodejs.yml@main
+#       with:
+#         version_override: ${{ inputs.version_override || '' }}
+#       secrets: inherit
+
 name: release_nodejs (reusable)
+
 on:
   workflow_call:
+    inputs:
+      version_override:
+        description: 'Pin a specific VERSION; skips auto-versioning when set'
+        required: false
+        type: string
+        default: ''
+      node_version:
+        description: 'Node version to use for release job (default: 20)'
+        required: false
+        type: string
+        default: '20'
+    outputs:
+      version:
+        description: 'The computed release version'
+        value: ${{ jobs.release.outputs.version }}
+      project_name:
+        description: 'The package name from package.json'
+        value: ${{ jobs.release.outputs.project_name }}
   workflow_dispatch:
+    inputs:
+      version_override:
+        description: 'Override VERSION (skip auto-versioning)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
 jobs:
-  noop_version_passthrough:
-    runs-on: ubuntu-latest
-    container:
-      image: node:20.15.1
-    if: (always() && $VERSION)
-    steps:
-    - uses: actions/checkout@v4.1.0
-    - run: echo "VERSION=$VERSION" >> release.env
-    - run: echo "PROJECT_NAME=${{ github.event.repository.name }}" >> release.env
-#     # 'artifacts.dotenv' was not transformed because there is no suitable equivalent in GitHub Actions
-  prerelease_tag:
-    runs-on: ubuntu-latest
-    container:
-      image: node:20.15.1
-    steps:
-    - uses: actions/checkout@v4.1.0
-    - run: echo "Preparing"
-    - run: export DEBIAN_FRONTEND=noninteractive
-    - run: apt update
-    - run: apt-get install -y git openssl
-    - run: git config --system user.email "build.server@growthsphere.ai"
-    - run: git config --system user.name "build-server"
-    - run: mkdir -p ~/.ssh
-    - run: echo -n "$DEPLOY_PRIVATE_KEY" | base64 -d > ~/.ssh/id_rsa
-    - run: chmod 600 ~/.ssh/id_rsa
-    - run: ssh-keyscan gitlab.com >> ~/.ssh/known_hosts
-    - run: chmod 644 ~/.ssh/known_hosts
-    - run: "if [[ \"${{ github.ref }}\" == \"${CI_DEFAULT_BRANCH}\" ]]\n  then \n    npm version minor --no-git-tag-version\n    VERSION=`npm pkg get version | tr -d '\"'`\nelif [[ \"${{ github.ref }}\" == patch* ]]\n  then \n    npm version patch --no-git-tag-version\n    VERSION=`npm pkg get version | tr -d '\"'`\nelif [[ \"${{ github.ref }}\" == staging ]]\n  then \n    npm version patch --no-git-tag-version\n    MAJOR=`npm pkg get version | tr -d '\"' | cut -d '.' -f1`\n    MINOR=`npm pkg get version | tr -d '\"' | cut -d '.' -f2`\n    PATCH=`npm pkg get version | tr -d '\"' | cut -d '.' -f3`\n    ALPHA=\"\"\n    VERSION=\"${MAJOR}.${MINOR}.${PATCH}${ALPHA}\"\nelif [[ \"${{ github.ref }}\" == release/* ]]\n  then \n    npm version patch --no-git-tag-version\n    MAJOR=`npm pkg get version | tr -d '\"' | cut -d '.' -f1`\n    MINOR=`npm pkg get version | tr -d '\"' | cut -d '.' -f2`\n    PATCH=`npm pkg get version | tr -d '\"' | cut -d '.' -f3`\n    RELEASE=r\n    DATE=`date  \"+%y%m\"`\n    STRING=S\n    VERSION=\"${MAJOR}.${MINOR}.${PATCH}-${RELEASE}${DATE}-${STRING}.${PATCH}\"\nelse \n    npm version prepatch --no-git-tag-version\n    VERSION=`npm pkg get version | tr -d '\"'`\nfi\nPROJECT_NAME=`npm pkg get name |tr -d '\"'| cut -d '/' -f2`\necho \"Current Job $PROJECT_NAME $VERSION\"\necho \"VERSION=$VERSION\" >> release.env\necho \"PROJECT_NAME=$PROJECT_NAME\" >> release.env\necho \"Current Job $PROJECT_NAME $VERSION\"\n"
-#     # 'artifacts.dotenv' was not transformed because there is no suitable equivalent in GitHub Actions
   release:
-    needs:
-    - noop_version_passthrough
-    - prerelease_tag
     runs-on: ubuntu-latest
-    container:
-      image: node:20.15.1
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
+      project_name: ${{ steps.set-version.outputs.project_name }}
     steps:
-    - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: prerelease_tag
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: noop_version_passthrough
-    - run: export DEBIAN_FRONTEND=noninteractive
-    - run: apt update
-    - run: apt-get install -y git openssl
-    - run: git config --system user.email "build.server@growthsphere.ai"
-    - run: git config --system user.name "build-server"
-    - run: mkdir -p ~/.ssh
-    - run: echo -n "$DEPLOY_PRIVATE_KEY" | base64 -d > ~/.ssh/id_rsa
-    - run: chmod 600 ~/.ssh/id_rsa
-    - run: ssh-keyscan gitlab.com >> ~/.ssh/known_hosts
-    - run: chmod 644 ~/.ssh/known_hosts
-    - run: "echo \"Preparing $PROJECT_NAME $VERSION\"\n      if [[ \"${{ github.ref }}\" == \"${CI_DEFAULT_BRANCH}\" ]]\n  then \n    npm version minor --no-git-tag-version\n    VERSION=`npm pkg get version | tr -d '\"'`\nelif [[ \"${{ github.ref }}\" == patch* ]]\n  then \n    npm version patch --no-git-tag-version\n    VERSION=`npm pkg get version | tr -d '\"'`\nelif [[ \"${{ github.ref }}\" == staging ]]\n  then \n    npm version patch --no-git-tag-version\n    MAJOR=`npm pkg get version | tr -d '\"' | cut -d '.' -f1`\n    MINOR=`npm pkg get version | tr -d '\"' | cut -d '.' -f2`\n    PATCH=`npm pkg get version | tr -d '\"' | cut -d '.' -f3`\n    ALPHA=\"\"\n    VERSION=\"${MAJOR}.${MINOR}.${PATCH}${ALPHA}\"\nelif [[ \"${{ github.ref }}\" == release/* ]]\n  then \n    npm version patch --no-git-tag-version\n    MAJOR=`npm pkg get version | tr -d '\"' | cut -d '.' -f1`\n    MINOR=`npm pkg get version | tr -d '\"' | cut -d '.' -f2`\n    PATCH=`npm pkg get version | tr -d '\"' | cut -d '.' -f3`\n    RELEASE=r\n    DATE=`date  \"+%y%m\"`\n    STRING=S\n    VERSION=\"${MAJOR}.${MINOR}.${PATCH}-${RELEASE}${DATE}-${STRING}.${PATCH}\"\nelse \n    npm version prepatch --no-git-tag-version\n    VERSION=`npm pkg get version | tr -d '\"'`\nfi\ngit add package.json package-lock.json\ngit commit -m \"update application version\"\ngit push -o ci.skip git@${{ github.server_url }}:${{ github.repository_owner }}/${{ github.event.repository.name }}.git HEAD:${{ github.ref }}\necho \"VERSION=$VERSION\" >> release.env\necho \"PROJECT_NAME=$PROJECT_NAME\" >> release.env\necho \"CI_COMMIT_SHA=$(git rev-parse HEAD)\" >> release.env\n"
-  apply_tag:
-    needs: release
-    runs-on: ubuntu-latest
-    container:
-      image: registry.gitlab.com/gitlab-org/release-cli:latest
-    steps:
-    - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: prerelease_tag
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: noop_version_passthrough
-    - run: echo "Releasing build ${VERSION}"
-    - uses: softprops/action-gh-release@v0.1.15
-      with:
-        tag_name: v$VERSION
-        target_commitish: "${{ github.sha }}"
-        body: v$VERSION
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version || '20' }}
+
+      - name: Configure safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Compute version
+        id: set-version
+        run: |
+          if [ -n "${{ inputs.version_override }}" ]; then
+            VERSION="${{ inputs.version_override }}"
+            if [ -f package.json ]; then
+              npm version "${VERSION}" --no-git-tag-version --allow-same-version
+            fi
+          else
+            REF_NAME="${{ github.ref_name }}"
+            DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+            if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || [ "${REF_NAME}" = "main" ] || [ "${REF_NAME}" = "master" ]; then
+              npm version minor --no-git-tag-version
+            elif echo "${REF_NAME}" | grep -qE '^patch-'; then
+              npm version patch --no-git-tag-version
+            else
+              npm version prepatch --no-git-tag-version
+            fi
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+
+          PROJECT_NAME=$(node -p "require('./package.json').name || 'unnamed'")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "project_name=${PROJECT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Computed VERSION=${VERSION} for PROJECT_NAME=${PROJECT_NAME}"
+
+      - name: Commit version bump
+        if: ${{ github.event_name != 'pull_request' && (github.ref_name == github.event.repository.default_branch || github.ref_name == 'main' || github.ref_name == 'master' || startsWith(github.ref_name, 'patch-')) }}
+        run: |
+          if [ -f package.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add package.json
+            if [ -f package-lock.json ]; then
+              git add package-lock.json
+            fi
+            if ! git diff --staged --quiet; then
+              git commit -m "chore: update version to ${{ steps.set-version.outputs.version }} [skip ci]"
+              git push origin HEAD:${{ github.ref_name }}
+            fi
+          fi
+
+      - name: Create Tag and Release
+        if: ${{ github.event_name != 'pull_request' && (github.ref_name == github.event.repository.default_branch || github.ref_name == 'main' || github.ref_name == 'master' || startsWith(github.ref_name, 'patch-')) }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.set-version.outputs.version }}
+          name: v${{ steps.set-version.outputs.version }}
+          body: v${{ steps.set-version.outputs.version }}
+          draft: false
+          prerelease: false
+          target_commitish: ${{ github.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}

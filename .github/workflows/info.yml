@@ -5,7 +5,7 @@ on:
 jobs:
   debug_info:
     runs-on: ubuntu-latest
-    if: always() && (vars.GSAI_CICD_INFO == 'true' || env.GSAI_CICD_INFO == 'true')
+    if: always() && vars.GSAI_CICD_INFO == 'true'
     env:
       GSAI_CICD_DEBUG: ""
     steps:
