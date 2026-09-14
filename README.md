@@ -5,8 +5,8 @@ This repository centralises CI/CD processes in a single place. While each consum
 
 ### Architecture & Build Split
 
-- **Archetypes (`github`):** Reusable workflow templates triggered exclusively via `workflow_call` (and `workflow_dispatch` for manual testing). They do not run automatically on commits to this repository.
-- **Repository Build (`github`):** The dedicated build pipeline for the `cicd` module itself. On push or pull request to the `cicd` repository, `build.yml` invokes `release_only.yml` to version, tag, and publish releases of the CI/CD module.
+- **Archetypes (`.github/workflows/*.yml`):** Reusable workflow templates triggered exclusively via `workflow_call` (and `workflow_dispatch` for manual testing). These are provided as objects to be consumed by external repositories (e.g. `python_image`, `ai_services`, etc.) pinned to tags, branches, or commit SHAs. They do not run automatically on push/PR commits to the `cicd` repository itself.
+- **Repository Build (`.github/workflows/build.yml`):** The dedicated build pipeline for the `cicd` module itself. On push or pull request to the `cicd` repository, only `build.yml` runs. It invokes `release_only.yml` to automatically calculate versions, tag the repository, and create/publish a source archive with GitHub releases.
 
 ---
 

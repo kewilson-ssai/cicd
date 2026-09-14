@@ -1,16 +1,16 @@
-# Reusable workflow: release, tag, and publish GitHub release.
+# Reusable workflow: release, tag, and publish GitHub release (Python 3.13).
 # Centralises release logic for repositories without build steps (or config/template repos).
 #
 # Usage (caller workflow):
 #
 #   jobs:
 #     release:
-#       uses: kewilson-ssai/cicd/.github/workflows/release_only.yml@main
+#       uses: kewilson-ssai/cicd/.github/workflows/release_only3.13.yml@main
 #       with:
 #         version_override: ${{ inputs.version_override || '' }}
 #       secrets: inherit
 
-name: release_only (reusable)
+name: release_only3.13 (reusable)
 
 on:
   workflow_call:
@@ -123,6 +123,14 @@ jobs:
             fi
           fi
 
+      - name: Create Source Archive
+        if: ${{ github.event_name != 'pull_request' && (github.ref_name == github.event.repository.default_branch || github.ref_name == 'main' || github.ref_name == 'master' || startsWith(github.ref_name, 'patch-')) }}
+        id: package-archive
+        run: |
+          ARCHIVE_NAME="${PROJECT_NAME}-${VERSION}.tar.gz"
+          tar --exclude='./.git' -czf "${ARCHIVE_NAME}" .
+          echo "archive_name=${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
+
       - name: Create Tag and Release
         if: ${{ github.event_name != 'pull_request' && (github.ref_name == github.event.repository.default_branch || github.ref_name == 'main' || github.ref_name == 'master' || startsWith(github.ref_name, 'patch-')) }}
         uses: softprops/action-gh-release@v2
@@ -130,6 +138,7 @@ jobs:
           tag_name: v${{ steps.set-version.outputs.version }}
           name: v${{ steps.set-version.outputs.version }}
           body: v${{ steps.set-version.outputs.version }}
+          files: ${{ steps.package-archive.outputs.archive_name }}
           draft: false
           prerelease: false
           target_commitish: ${{ github.sha }}
