@@ -25,6 +25,11 @@ on:
         description: 'Docker image name (e.g. python-build-image)'
         required: true
         type: string
+      registry:
+        description: 'Docker registry URL or prefix (e.g. ghcr.io/<owner>, docker.io/<user>, or custom registry)'
+        required: false
+        type: string
+        default: ''
       dockerfile:
         description: 'Path to Dockerfile'
         required: false
@@ -104,6 +109,10 @@ on:
         required: false
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
 
@@ -118,6 +127,8 @@ jobs:
       project_name: ${{ steps.set-version.outputs.project_name }}
       build_matrix: ${{ steps.set-matrix.outputs.build_matrix }}
       manifest_matrix: ${{ steps.set-matrix.outputs.manifest_matrix }}
+      registry: ${{ steps.set-registry.outputs.registry }}
+      registry_host: ${{ steps.set-registry.outputs.registry_host }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -222,6 +233,33 @@ jobs:
               f.write(f'manifest_matrix={json.dumps(manifest_matrix)}\n')
           "
 
+      - name: Determine Docker registry
+        id: set-registry
+        run: |
+          python3 -c "
+          import os
+          raw_registry = '''${{ inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY }}'''.strip()
+          owner = '${{ github.repository_owner }}'
+          if not raw_registry:
+              registry = f'ghcr.io/{owner}'
+          else:
+              registry = raw_registry.rstrip('/')
+
+          if registry.startswith('ghcr.io'):
+              registry_host = 'ghcr.io'
+          elif registry.startswith('docker.io') or 'docker.com' in registry:
+              registry_host = 'docker.io'
+          elif '/' in registry:
+              registry_host = registry.split('/')[0]
+          else:
+              registry_host = registry
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'registry={registry}\n')
+              f.write(f'registry_host={registry_host}\n')
+          print(f'Configured REGISTRY={registry}, REGISTRY_HOST={registry_host}')
+          "
+
   # ── Multi-arch Docker Build (single image) ──────────────────────────────────
   # Runs when python_versions is NOT set.
   container-build:
@@ -261,16 +299,20 @@ jobs:
           username: ${{ secrets.DHI_USER }}
           password: ${{ secrets.DHI_TOKEN }}
 
-      - name: Login to local Docker registry
+      - name: Login to Docker registry
+        if: env.LOGIN_USER != '' && env.LOGIN_PASS != ''
         uses: docker/login-action@v3
+        env:
+          LOGIN_USER: ${{ secrets.DOCKER_REGISTRY_USER || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && github.actor || '' }}
+          LOGIN_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && secrets.GITHUB_TOKEN || '' }}
         with:
-          registry: ${{ secrets.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+          registry: ${{ needs.version.outputs.registry_host || 'ghcr.io' }}
+          username: ${{ env.LOGIN_USER }}
+          password: ${{ env.LOGIN_PASS }}
 
       - name: Build and push arch-specific image
         run: |
-          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
           ARCH_TAG="${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${{ matrix.platform_slug }}"
           CACHE_IMAGE="${REGISTRY}/${{ inputs.image_name }}:cache-${{ matrix.platform_slug }}"
 
@@ -321,16 +363,20 @@ jobs:
           username: ${{ secrets.DHI_USER }}
           password: ${{ secrets.DHI_TOKEN }}
 
-      - name: Login to local Docker registry
+      - name: Login to Docker registry
+        if: env.LOGIN_USER != '' && env.LOGIN_PASS != ''
         uses: docker/login-action@v3
+        env:
+          LOGIN_USER: ${{ secrets.DOCKER_REGISTRY_USER || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && github.actor || '' }}
+          LOGIN_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && secrets.GITHUB_TOKEN || '' }}
         with:
-          registry: ${{ secrets.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+          registry: ${{ needs.version.outputs.registry_host || 'ghcr.io' }}
+          username: ${{ env.LOGIN_USER }}
+          password: ${{ env.LOGIN_PASS }}
 
       - name: Build and push arch-specific image
         run: |
-          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
           PY_VER="${{ matrix.python_version }}"
           ARCH_TAG="${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${PY_VER}-${{ matrix.platform_slug }}"
           CACHE_IMAGE="${REGISTRY}/${{ inputs.image_name }}:cache-${PY_VER}-${{ matrix.platform_slug }}"
@@ -366,16 +412,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to local Docker registry
+      - name: Login to Docker registry
+        if: env.LOGIN_USER != '' && env.LOGIN_PASS != ''
         uses: docker/login-action@v3
+        env:
+          LOGIN_USER: ${{ secrets.DOCKER_REGISTRY_USER || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && github.actor || '' }}
+          LOGIN_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && secrets.GITHUB_TOKEN || '' }}
         with:
-          registry: ${{ secrets.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+          registry: ${{ needs.version.outputs.registry_host || 'ghcr.io' }}
+          username: ${{ env.LOGIN_USER }}
+          password: ${{ env.LOGIN_PASS }}
 
       - name: Create and push multi-arch manifest
         run: |
-          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
           REF_NAME="${{ github.ref_name }}"
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
           CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
@@ -416,16 +466,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to local Docker registry
+      - name: Login to Docker registry
+        if: env.LOGIN_USER != '' && env.LOGIN_PASS != ''
         uses: docker/login-action@v3
+        env:
+          LOGIN_USER: ${{ secrets.DOCKER_REGISTRY_USER || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && github.actor || '' }}
+          LOGIN_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && secrets.GITHUB_TOKEN || '' }}
         with:
-          registry: ${{ secrets.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+          registry: ${{ needs.version.outputs.registry_host || 'ghcr.io' }}
+          username: ${{ env.LOGIN_USER }}
+          password: ${{ env.LOGIN_PASS }}
 
       - name: Create and push multi-arch manifest for Python ${{ matrix.python_version }}
         run: |
-          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
           PY_VER="${{ matrix.python_version }}"
           REF_NAME="${{ github.ref_name }}"
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
@@ -464,16 +518,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Login to local Docker registry
+      - name: Login to Docker registry
+        if: env.LOGIN_USER != '' && env.LOGIN_PASS != ''
         uses: docker/login-action@v3
+        env:
+          LOGIN_USER: ${{ secrets.DOCKER_REGISTRY_USER || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && github.actor || '' }}
+          LOGIN_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && secrets.GITHUB_TOKEN || '' }}
         with:
-          registry: ${{ secrets.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+          registry: ${{ needs.version.outputs.registry_host || 'ghcr.io' }}
+          username: ${{ env.LOGIN_USER }}
+          password: ${{ env.LOGIN_PASS }}
 
       - name: Run image tests
         run: |
-          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
           REF_NAME="${{ github.ref_name }}"
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
           IS_PROTECTED="false"
@@ -511,12 +569,16 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - name: Login to local Docker registry
+      - name: Login to Docker registry
+        if: env.LOGIN_USER != '' && env.LOGIN_PASS != ''
         uses: docker/login-action@v3
+        env:
+          LOGIN_USER: ${{ secrets.DOCKER_REGISTRY_USER || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && github.actor || '' }}
+          LOGIN_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD || ((inputs.registry == '' && vars.DOCKER_REGISTRY == '' && secrets.DOCKER_REGISTRY == '') || startsWith(inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY, 'ghcr.io')) && secrets.GITHUB_TOKEN || '' }}
         with:
-          registry: ${{ secrets.DOCKER_REGISTRY }}
-          username: ${{ secrets.DOCKER_REGISTRY_USER }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+          registry: ${{ needs.version.outputs.registry_host || 'ghcr.io' }}
+          username: ${{ env.LOGIN_USER }}
+          password: ${{ env.LOGIN_PASS }}
 
       - name: Install Syft and Grype
         run: |
@@ -525,7 +587,7 @@ jobs:
 
       - name: Scan image
         run: |
-          REGISTRY="${{ secrets.DOCKER_REGISTRY }}"
+          REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
           REF_NAME="${{ github.ref_name }}"
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
           IS_PROTECTED="false"
