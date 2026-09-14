@@ -87,7 +87,7 @@ on:
         type: string
         default: '--build-arg PYTHON_VERSION={version}'
       run_container_test:
-        description: 'Run tests/test.sh against the built image after the manifest step'
+        description: 'Run tests against the built image after the manifest step'
         required: false
         type: boolean
         default: false
@@ -96,6 +96,16 @@ on:
         required: false
         type: string
         default: 'tests/test.sh'
+      structure_test_config:
+        description: 'Path to container-structure-test config YAML file (optional)'
+        required: false
+        type: string
+        default: ''
+      fail_on_severity:
+        description: 'Fail vulnerability scan if CVEs at or above this severity are found (e.g. critical, high)'
+        required: false
+        type: string
+        default: ''
     secrets:
       DOCKER_REGISTRY:
         required: false
@@ -112,6 +122,7 @@ on:
 permissions:
   contents: read
   packages: write
+  security-events: write
 
 env:
   BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
@@ -280,7 +291,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up QEMU
+      # Only set up QEMU if target platform differs from runner host architecture
+      - name: Set up QEMU (if cross-compiling)
+        if: (matrix.target_platform == 'linux/arm64' && runner.arch != 'ARM64') || (matrix.target_platform == 'linux/amd64' && runner.arch != 'X64')
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
@@ -316,18 +329,22 @@ jobs:
           ARCH_TAG="${REGISTRY}/${{ inputs.image_name }}:${VERSION}-${{ matrix.platform_slug }}"
           CACHE_IMAGE="${REGISTRY}/${{ inputs.image_name }}:cache-${{ matrix.platform_slug }}"
 
-          echo "Building ${{ matrix.target_platform }} → ${ARCH_TAG}"
+          echo "Building ${{ matrix.target_platform }} → ${ARCH_TAG} (caching via ${CACHE_IMAGE})"
 
           docker buildx build \
             --platform ${{ matrix.target_platform }} \
             --push \
             --provenance=false \
             --sbom=false \
-            --cache-from "${CACHE_IMAGE}" \
-            --cache-to type=inline \
+            --cache-from type=registry,ref="${CACHE_IMAGE}" \
+            --cache-to type=registry,ref="${CACHE_IMAGE}",mode=max \
+            --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
+            --label org.opencontainers.image.revision="${{ github.sha }}" \
+            --label org.opencontainers.image.created="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --label org.opencontainers.image.title="${{ inputs.image_name }}" \
+            --label org.opencontainers.image.version="${VERSION}" \
             -t "${ARCH_TAG}" \
             -f ${{ inputs.dockerfile }} \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
             ${{ inputs.extra_build_args }} \
             .
 
@@ -344,7 +361,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up QEMU
+      # Only set up QEMU if target platform differs from runner host architecture
+      - name: Set up QEMU (if cross-compiling)
+        if: (matrix.target_platform == 'linux/arm64' && runner.arch != 'ARM64') || (matrix.target_platform == 'linux/amd64' && runner.arch != 'X64')
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
@@ -384,18 +403,22 @@ jobs:
           # Expand the {version} placeholder in the args template
           BUILD_ARGS=$(echo "${{ inputs.extra_build_args_template }}" | sed "s/{version}/${PY_VER}/g")
 
-          echo "Building Python ${PY_VER} for ${{ matrix.target_platform }} → ${ARCH_TAG}"
+          echo "Building Python ${PY_VER} for ${{ matrix.target_platform }} → ${ARCH_TAG} (caching via ${CACHE_IMAGE})"
 
           docker buildx build \
             --platform ${{ matrix.target_platform }} \
             --push \
             --provenance=false \
             --sbom=false \
-            --cache-from "${CACHE_IMAGE}" \
-            --cache-to type=inline \
+            --cache-from type=registry,ref="${CACHE_IMAGE}" \
+            --cache-to type=registry,ref="${CACHE_IMAGE}",mode=max \
+            --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
+            --label org.opencontainers.image.revision="${{ github.sha }}" \
+            --label org.opencontainers.image.created="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --label org.opencontainers.image.title="${{ inputs.image_name }}" \
+            --label org.opencontainers.image.version="${VERSION}-${PY_VER}" \
             -t "${ARCH_TAG}" \
             -f ${{ inputs.dockerfile }} \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
             ${BUILD_ARGS} \
             .
 
@@ -516,7 +539,16 @@ jobs:
       - version
       - container-manifest
     if: ${{ inputs.run_container_test && inputs.python_versions == '' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target_platform: linux/amd64
+            platform_slug: linux-amd64
+            runner: ${{ inputs.runs_on_amd64 || inputs.runs_on || 'ubuntu-latest' }}
+          - target_platform: linux/arm64
+            platform_slug: linux-arm64
+            runner: ${{ inputs.runs_on_arm64 || inputs.runs_on || 'ubuntu-latest' }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -534,7 +566,9 @@ jobs:
           systemctl restart docker || service docker restart || true
           '
 
-      - name: Set up QEMU
+      # Only set up QEMU if cross-testing non-native architecture
+      - name: Set up QEMU (if cross-testing)
+        if: (matrix.target_platform == 'linux/arm64' && runner.arch != 'ARM64') || (matrix.target_platform == 'linux/amd64' && runner.arch != 'X64')
         uses: docker/setup-qemu-action@v4
 
       - name: Login to Docker registry
@@ -565,9 +599,26 @@ jobs:
             TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${CLEAN_BRANCH}-latest"
           fi
 
-          echo "Testing image: ${TEST_IMAGE}"
-          docker pull "${TEST_IMAGE}"
-          IMAGE="${TEST_IMAGE}" ${{ inputs.test_script }}
+          echo "Testing image: ${TEST_IMAGE} on platform ${{ matrix.target_platform }}"
+          docker pull --platform ${{ matrix.target_platform }} "${TEST_IMAGE}"
+          IMAGE="${TEST_IMAGE}" PLATFORM="${{ matrix.target_platform }}" ${{ inputs.test_script }}
+
+      - name: Run Container Structure Tests
+        if: ${{ inputs.structure_test_config != '' }}
+        run: |
+          CST_ARCH="amd64"
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            CST_ARCH="arm64"
+          fi
+          curl -sSfLO "https://storage.googleapis.com/container-structure-test/v1.16.0/container-structure-test-linux-${CST_ARCH}"
+          chmod +x "container-structure-test-linux-${CST_ARCH}"
+          sudo mv "container-structure-test-linux-${CST_ARCH}" /usr/local/bin/container-structure-test
+
+          echo "Running container-structure-test for ${{ matrix.target_platform }} on ${TEST_IMAGE}"
+          container-structure-test test \
+            --image "${TEST_IMAGE}" \
+            --platform "${{ matrix.target_platform }}" \
+            --config "${{ inputs.structure_test_config }}"
 
   # ── Optional Container Test (multi-Python-version) ──────────────────────────
   container-test-matrix:
@@ -575,9 +626,9 @@ jobs:
       - version
       - container-manifest-matrix
     if: ${{ inputs.run_container_test && inputs.python_versions != '' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
-      matrix: ${{ fromJson(needs.version.outputs.manifest_matrix) }}
+      matrix: ${{ fromJson(needs.version.outputs.build_matrix) }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -595,7 +646,9 @@ jobs:
           systemctl restart docker || service docker restart || true
           '
 
-      - name: Set up QEMU
+      # Only set up QEMU if cross-testing non-native architecture
+      - name: Set up QEMU (if cross-testing)
+        if: (matrix.target_platform == 'linux/arm64' && runner.arch != 'ARM64') || (matrix.target_platform == 'linux/amd64' && runner.arch != 'X64')
         uses: docker/setup-qemu-action@v4
 
       - name: Login to Docker registry
@@ -609,7 +662,7 @@ jobs:
           username: ${{ env.LOGIN_USER }}
           password: ${{ env.LOGIN_PASS }}
 
-      - name: Run image tests for Python ${{ matrix.python_version }}
+      - name: Run image tests for Python ${{ matrix.python_version }} (${{ matrix.target_platform }})
         run: |
           REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
           PY_VER="${{ matrix.python_version }}"
@@ -627,9 +680,26 @@ jobs:
             TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${PY_VER}-${CLEAN_BRANCH}-latest"
           fi
 
-          echo "Testing image: ${TEST_IMAGE}"
-          docker pull "${TEST_IMAGE}"
-          IMAGE="${TEST_IMAGE}" ${{ inputs.test_script }}
+          echo "Testing image: ${TEST_IMAGE} on platform ${{ matrix.target_platform }}"
+          docker pull --platform ${{ matrix.target_platform }} "${TEST_IMAGE}"
+          IMAGE="${TEST_IMAGE}" PLATFORM="${{ matrix.target_platform }}" ${{ inputs.test_script }}
+
+      - name: Run Container Structure Tests for Python ${{ matrix.python_version }}
+        if: ${{ inputs.structure_test_config != '' }}
+        run: |
+          CST_ARCH="amd64"
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            CST_ARCH="arm64"
+          fi
+          curl -sSfLO "https://storage.googleapis.com/container-structure-test/v1.16.0/container-structure-test-linux-${CST_ARCH}"
+          chmod +x "container-structure-test-linux-${CST_ARCH}"
+          sudo mv "container-structure-test-linux-${CST_ARCH}" /usr/local/bin/container-structure-test
+
+          echo "Running container-structure-test for Python ${{ matrix.python_version }} (${{ matrix.target_platform }})"
+          container-structure-test test \
+            --image "${TEST_IMAGE}" \
+            --platform "${{ matrix.target_platform }}" \
+            --config "${{ inputs.structure_test_config }}"
 
   # ── Security Scan ───────────────────────────────────────────────────────────
   container-scan:
@@ -666,7 +736,7 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
-      - name: Scan image
+      - name: Scan image and generate reports
         run: |
           REGISTRY="${{ needs.version.outputs.registry || inputs.registry || vars.DOCKER_REGISTRY || secrets.DOCKER_REGISTRY || format('ghcr.io/{0}', github.repository_owner) }}"
           REF_NAME="${{ github.ref_name }}"
@@ -684,11 +754,32 @@ jobs:
           fi
 
           echo "Scanning image: ${SCAN_IMAGE}"
-          syft "${SCAN_IMAGE}" -o spdx-json | grype > scan_results.txt
+          syft "${SCAN_IMAGE}" -o spdx-json > sbom.spdx.json
+          grype "${SCAN_IMAGE}" > scan_results.txt
+          cat scan_results.txt
 
-      - name: Upload scan results
+          grype "${SCAN_IMAGE}" -o sarif > grype.sarif
+
+          if [ -n "${{ inputs.fail_on_severity }}" ]; then
+            echo "Checking vulnerability failure threshold: ${{ inputs.fail_on_severity }}"
+            grype "${SCAN_IMAGE}" --fail-on "${{ inputs.fail_on_severity }}"
+          fi
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && hashFiles('grype.sarif') != ''
+        continue-on-error: true
+        with:
+          sarif_file: grype.sarif
+          category: grype-${{ inputs.image_name }}
+
+      - name: Upload scan results artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: scan-results-${{ inputs.image_name }}
-          path: scan_results.txt
+          path: |
+            scan_results.txt
+            sbom.spdx.json
+            grype.sarif
           retention-days: 7
