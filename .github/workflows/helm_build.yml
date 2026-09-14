@@ -1,6 +1,6 @@
-name: isnp/gsai/cicd
+name: helm_build (reusable)
 on:
-  push:
+  workflow_call:
   workflow_dispatch:
 jobs:
   helm-test:

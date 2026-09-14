@@ -1,6 +1,6 @@
-name: isnp/gsai/cicd
+name: UI (reusable)
 on:
-  push:
+  workflow_call:
   workflow_dispatch:
 jobs:
   unit_test_backend:

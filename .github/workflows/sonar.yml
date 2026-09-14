@@ -1,6 +1,6 @@
-name: isnp/gsai/cicd
+name: sonar (reusable)
 on:
-  push:
+  workflow_call:
   workflow_dispatch:
 jobs:
   sonarcloud-check:

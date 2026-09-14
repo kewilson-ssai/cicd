@@ -1,11 +1,12 @@
 # cicd
 
-The CICD repository hosts the automated processes that will build and release each package.
-This repository process of building code is expected to be managed in a single place. While
-each repository can be locked down to a version of the cicd repository, it is up to consuming
-repository owner then to maintain the latest references. In some circumstances the repository
-may be pushed forward by the dev ops team and then systematically update in each consuming
-repository.
+The CICD repository hosts the automated reusable workflow archetypes that build and release each package.
+This repository centralises CI/CD processes in a single place. While each consuming repository can be locked down to a version or tag of the cicd repository, consuming projects maintain their references and can update them independently.
+
+### Architecture & Build Split
+
+- **Archetypes (`.github/workflows/*.yml`):** Reusable workflow templates triggered exclusively via `workflow_call` (and `workflow_dispatch` for manual testing). They do not run automatically on commits to this repository.
+- **Repository Build (`.github/workflows/build.yml`):** The dedicated build pipeline for the `cicd` module itself. On push or pull request to the `cicd` repository, `build.yml` invokes `release_only.yml` to version, tag, and publish releases of the CI/CD module.
 
 ---
 

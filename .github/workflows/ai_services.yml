@@ -1,6 +1,6 @@
-name: isnp/gsai/cicd
+name: ai_services (reusable)
 on:
-  push:
+  workflow_call:
   workflow_dispatch:
 jobs:
   docker-image-build:

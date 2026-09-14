@@ -60,7 +60,6 @@ on:
         required: false
         type: string
         default: '7.1.0'
-  push:
   workflow_dispatch:
     inputs:
       python_version:

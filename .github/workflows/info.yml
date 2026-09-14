@@ -1,6 +1,6 @@
-name: isnp/gsai/cicd
+name: info (reusable)
 on:
-  push:
+  workflow_call:
   workflow_dispatch:
 jobs:
   debug_info:

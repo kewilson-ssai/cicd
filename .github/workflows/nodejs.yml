@@ -1,6 +1,6 @@
-name: isnp/gsai/cicd
+name: nodejs (reusable)
 on:
-  push:
+  workflow_call:
   workflow_dispatch:
 jobs:
   unit_test:

@@ -1,6 +1,6 @@
-name: isnp/gsai/cicd
+name: release_nodejs (reusable)
 on:
-  push:
+  workflow_call:
   workflow_dispatch:
 jobs:
   noop_version_passthrough:

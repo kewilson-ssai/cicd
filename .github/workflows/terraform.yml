@@ -1,6 +1,6 @@
-name: isnp/gsai/cicd
+name: terraform (reusable)
 on:
-  push:
+  workflow_call:
   workflow_dispatch:
 jobs:
   plan_job:

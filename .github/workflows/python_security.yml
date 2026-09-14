@@ -30,7 +30,6 @@ on:
         required: false
         type: string
         default: 'low'
-  push:
   workflow_dispatch:
     inputs:
       python_version:
