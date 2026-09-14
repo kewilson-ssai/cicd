@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cicd"
-version = "0.100.0"
+version = "0.101.0"
 description = ""
 authors = ["kewilson <kewilson@growthsphere.ai>"]
 readme = "README.md"
