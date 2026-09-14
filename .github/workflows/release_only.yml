@@ -125,15 +125,6 @@ jobs:
             fi
           fi
 
-      - name: Create Source Archive
-        if: ${{ github.event_name != 'pull_request' && (github.ref_name == github.event.repository.default_branch || github.ref_name == 'main' || github.ref_name == 'master' || startsWith(github.ref_name, 'patch-')) }}
-        id: package-archive
-        run: |
-          ARCHIVE_NAME="${PROJECT_NAME}-${VERSION}.tar.gz"
-          tar --exclude='./.git' --exclude="./${ARCHIVE_NAME}" --exclude="${ARCHIVE_NAME}" -czf "/tmp/${ARCHIVE_NAME}" .
-          mv "/tmp/${ARCHIVE_NAME}" .
-          echo "archive_name=${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
-
       - name: Create Tag and Release
         if: ${{ github.event_name != 'pull_request' && (github.ref_name == github.event.repository.default_branch || github.ref_name == 'main' || github.ref_name == 'master' || startsWith(github.ref_name, 'patch-')) }}
         uses: softprops/action-gh-release@v2
@@ -141,7 +132,6 @@ jobs:
           tag_name: v${{ steps.set-version.outputs.version }}
           name: v${{ steps.set-version.outputs.version }}
           body: v${{ steps.set-version.outputs.version }}
-          files: ${{ steps.package-archive.outputs.archive_name }}
           draft: false
           prerelease: false
           target_commitish: ${{ github.sha }}
