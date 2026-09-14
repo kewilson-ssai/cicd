@@ -45,6 +45,21 @@ on:
         required: false
         type: string
         default: '3.13'
+      runs_on_amd64:
+        description: 'Runner environment for amd64 build jobs (default: ubuntu-latest)'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      runs_on_arm64:
+        description: 'Runner environment for arm64 build jobs (default: ubuntu-24.04-arm)'
+        required: false
+        type: string
+        default: 'ubuntu-24.04-arm'
+      runs_on:
+        description: 'Legacy/fallback runner environment for build jobs (overrides runs_on_amd64 if set)'
+        required: false
+        type: string
+        default: ''
       extra_build_args:
         description: 'Additional --build-arg flags for single-image builds'
         required: false
@@ -157,6 +172,8 @@ jobs:
           python3 -c "
           import json, os
           versions_str = '''${{ inputs.python_versions }}'''.strip()
+          runs_on_amd64 = '''${{ inputs.runs_on_amd64 || inputs.runs_on || 'ubuntu-latest' }}'''.strip()
+          runs_on_arm64 = '''${{ inputs.runs_on_arm64 || 'ubuntu-24.04-arm' }}'''.strip()
           if versions_str:
               try:
                   versions = json.loads(versions_str)
@@ -171,13 +188,13 @@ jobs:
                   'python_version': str(v),
                   'platform_slug': 'linux-amd64',
                   'target_platform': 'linux/amd64',
-                  'runner': 'self-hosted'
+                  'runner': runs_on_amd64
               })
               build_include.append({
                   'python_version': str(v),
                   'platform_slug': 'linux-arm64',
                   'target_platform': 'linux/arm64',
-                  'runner': ['self-hosted', 'arm64']
+                  'runner': runs_on_arm64
               })
 
           manifest_include = [{'python_version': str(v)} for v in versions]
@@ -200,11 +217,11 @@ jobs:
       matrix:
         include:
           - target_platform: linux/amd64
-            runner: self-hosted
             platform_slug: linux-amd64
+            runner: ${{ inputs.runs_on_amd64 || inputs.runs_on || 'ubuntu-latest' }}
           - target_platform: linux/arm64
-            runner: [self-hosted, arm64]
             platform_slug: linux-arm64
+            runner: ${{ inputs.runs_on_arm64 || 'ubuntu-24.04-arm' }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
