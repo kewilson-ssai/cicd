@@ -78,11 +78,11 @@ on:
         default: 'tests/test.sh'
     secrets:
       DOCKER_REGISTRY:
-        required: true
+        required: false
       DOCKER_REGISTRY_USER:
-        required: true
+        required: false
       DOCKER_REGISTRY_PASSWORD:
-        required: true
+        required: false
       DHI_USER:
         required: false
       DHI_TOKEN:
@@ -101,6 +101,8 @@ jobs:
     outputs:
       version: ${{ steps.set-version.outputs.version }}
       project_name: ${{ steps.set-version.outputs.project_name }}
+      build_matrix: ${{ steps.set-matrix.outputs.build_matrix }}
+      manifest_matrix: ${{ steps.set-matrix.outputs.manifest_matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -148,6 +150,45 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "project_name=${PROJECT_NAME}" >> "$GITHUB_OUTPUT"
           echo "Computed VERSION=${VERSION} for PROJECT_NAME=${PROJECT_NAME}"
+
+      - name: Generate matrix for multi-version builds
+        id: set-matrix
+        run: |
+          python3 -c "
+          import json, os
+          versions_str = '''${{ inputs.python_versions }}'''.strip()
+          if versions_str:
+              try:
+                  versions = json.loads(versions_str)
+              except Exception:
+                  versions = [v.strip() for v in versions_str.split(',') if v.strip()]
+          else:
+              versions = ['3.13']
+
+          build_include = []
+          for v in versions:
+              build_include.append({
+                  'python_version': str(v),
+                  'platform_slug': 'linux-amd64',
+                  'target_platform': 'linux/amd64',
+                  'runner': 'self-hosted'
+              })
+              build_include.append({
+                  'python_version': str(v),
+                  'platform_slug': 'linux-arm64',
+                  'target_platform': 'linux/arm64',
+                  'runner': ['self-hosted', 'arm64']
+              })
+
+          manifest_include = [{'python_version': str(v)} for v in versions]
+
+          build_matrix = {'include': build_include}
+          manifest_matrix = {'include': manifest_include}
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'build_matrix={json.dumps(build_matrix)}\n')
+              f.write(f'manifest_matrix={json.dumps(manifest_matrix)}\n')
+          "
 
   # ── Multi-arch Docker Build (single image) ──────────────────────────────────
   # Runs when python_versions is NOT set.
@@ -220,16 +261,7 @@ jobs:
     if: ${{ inputs.python_versions != '' }}
     runs-on: ${{ matrix.runner }}
     strategy:
-      matrix:
-        python_version: ${{ fromJson(inputs.python_versions || '["3.13"]') }}
-        platform_slug: [linux-amd64, linux-arm64]
-        include:
-          - platform_slug: linux-amd64
-            target_platform: linux/amd64
-            runner: self-hosted
-          - platform_slug: linux-arm64
-            target_platform: linux/arm64
-            runner: [self-hosted, arm64]
+      matrix: ${{ fromJson(needs.version.outputs.build_matrix) }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -339,8 +371,7 @@ jobs:
     if: ${{ inputs.python_versions != '' }}
     runs-on: ubuntu-latest
     strategy:
-      matrix:
-        python_version: ${{ fromJson(inputs.python_versions || '["3.13"]') }}
+      matrix: ${{ fromJson(needs.version.outputs.manifest_matrix) }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
