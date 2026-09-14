@@ -3,24 +3,11 @@ name: Build cicd
 on:
   push:
     branches:
-      - main
-      - master
-      - 'patch-*'
+      - '**'
   pull_request:
     branches:
-      - main
-      - master
-      - 'patch-*'
-  workflow_dispatch:
-    inputs:
-      version_override:
-        description: 'Override VERSION (skip auto-versioning)'
-        required: false
-        default: ''
+      - '**'
 
 jobs:
-  release:
-    uses: ./.github/workflows/release_only.yml
-    with:
-      version_override: ${{ inputs.version_override || '' }}
-    secrets: inherit
+  build:
+    uses: kewilson-ssai/cicd/github/workflows/release_only.yml@main
