@@ -5,9 +5,9 @@ on:
 jobs:
   debug_info:
     runs-on: ubuntu-latest
-    if: (always() && $GSAI_CICD_INFO && $GSAI_CICD_INFO == "true") || false
+    if: always() && (vars.GSAI_CICD_INFO == 'true' || env.GSAI_CICD_INFO == 'true')
     env:
-      GSAI_CICD_DEBUG:
+      GSAI_CICD_DEBUG: ""
     steps:
     - uses: actions/checkout@v4.1.0
     - run: |

@@ -17,8 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: node:20.15.1
-    if: # Unable to map conditional expression to GitHub Actions equivalent
-#         !($VERSION) || !(${{ github.ref }}) || (always() && ${{ github.ref }} == $CI_DEFAULT_BRANCH) || (always() && ${{ github.ref }} =~ /^patch-/) || (always() && ${{ github.ref }} =~ /^staging/) || (always() && ${{ github.ref }} =~ /^release\/*/) || (always() && ${{ github.event_name }} == 'merge_request_event' && ( ${{ github.event.pull_request.base.ref }} =~ /^patch-/ || ${{ github.event.pull_request.base.ref }} =~ /^staging/ || ${{ github.event.pull_request.base.ref }} =~ /^release\/*/ || ${{ github.event.pull_request.base.ref }} == $CI_DEFAULT_BRANCH )) || false
     steps:
     - uses: actions/checkout@v4.1.0
     - run: echo "Preparing"
@@ -41,8 +39,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: node:20.15.1
-    if: # Unable to map conditional expression to GitHub Actions equivalent
-#         !($VERSION) || !(${{ github.ref }}) || (always() && ${{ github.ref }} == $CI_DEFAULT_BRANCH) || (always() && ${{ github.ref }} =~ /^patch-/) || (always() && ${{ github.ref }} =~ /^staging/) || (always() && ${{ github.ref }} =~ /^release\/*/) || false
     steps:
     - uses: actions/checkout@v4.1.0
     - uses: actions/download-artifact@v4.1.0
@@ -67,8 +63,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/gitlab-org/release-cli:latest
-    if: # Unable to map conditional expression to GitHub Actions equivalent
-#         !($VERSION) || !(${{ github.ref }}) || ${{ github.ref }} == $CI_DEFAULT_BRANCH || ${{ github.ref }} =~ /^patch-/ || ${{ github.ref }} =~ /^staging/ || ${{ github.ref }} =~ /^release\/*/
     steps:
     - uses: actions/checkout@v4.1.0
     - uses: actions/download-artifact@v4.1.0

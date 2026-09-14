@@ -8,7 +8,6 @@ jobs:
     container:
       image: registry.gitlab.com/isnp/gsai/devops/terraform_build_image/terraform_build_image:latest
       options: "--entrypoint /bin/bash"
-    if: # Unable to map conditional expression to GitHub Actions equivalent
     env:
       TF_IN_AUTOMATION: 'false'
       TENANT: staging
@@ -39,7 +38,6 @@ jobs:
     container:
       image: registry.gitlab.com/isnp/gsai/devops/terraform_build_image/terraform_build_image:latest
       options: "--entrypoint /bin/bash"
-    if: # Unable to map conditional expression to GitHub Actions equivalent
     env:
       TF_IN_AUTOMATION: 'false'
       TENANT: staging

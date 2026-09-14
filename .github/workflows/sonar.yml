@@ -4,12 +4,11 @@ on:
   workflow_dispatch:
 jobs:
   sonarcloud-check:
-    needs: test_python_module
     runs-on: ubuntu-latest
     container:
       image: sonarsource/sonar-scanner-cli:latest
       options: "--entrypoint "
-    if: (github.event_type == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
     env:
       SONAR_USER_HOME: "${{ github.workspace }}/.sonar"
       GIT_DEPTH: '0'

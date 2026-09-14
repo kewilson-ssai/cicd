@@ -7,8 +7,6 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: docker:latest
-    if: # Unable to map conditional expression to GitHub Actions equivalent
-#         (always() && ${{ github.ref }} == $CI_DEFAULT_BRANCH) || (always() && ${{ github.ref }} =~ /^staging/) || (always() && ${{ github.event_name }} == 'merge_request_event' && ( ${{ github.event.pull_request.base.ref }} =~ /^staging/ || ${{ github.event.pull_request.base.ref }} == $CI_DEFAULT_BRANCH)) || false
     services:
       docker:dind:
         image: docker:dind
@@ -38,8 +36,6 @@ jobs:
     container:
       image: alpine/helm:latest
       options: "--entrypoint "
-    if: # Unable to map conditional expression to GitHub Actions equivalent
-#         (always() && ${{ github.ref }} == $CI_DEFAULT_BRANCH) || (always() && ${{ github.ref }} =~ /^staging/) || (always() && ${{ github.event_name }} == 'merge_request_event' && ( ${{ github.event.pull_request.base.ref }} =~ /^staging/ || ${{ github.event.pull_request.base.ref }} == $CI_DEFAULT_BRANCH)) || false
     services:
       docker:dind:
         image: docker:dind
