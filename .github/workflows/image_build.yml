@@ -87,6 +87,7 @@ on:
         required: false
       DHI_TOKEN:
         required: false
+  workflow_dispatch:
 
 env:
   BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
@@ -96,7 +97,7 @@ jobs:
   version:
     runs-on: ubuntu-latest
     container:
-      image: ${{ inputs.python_container || vars.PYTHON_CONTAINER || (inputs.python_version && format('python:{0}', inputs.python_version)) || (vars.PYTHON_VERSION && format('python:{0}', vars.PYTHON_VERSION)) || 'python:3.13' }}
+      image: ${{ inputs.python_container || vars.PYTHON_CONTAINER || 'python:3.13' }}
     outputs:
       version: ${{ steps.set-version.outputs.version }}
       project_name: ${{ steps.set-version.outputs.project_name }}
@@ -221,13 +222,14 @@ jobs:
     strategy:
       matrix:
         python_version: ${{ fromJson(inputs.python_versions || '["3.13"]') }}
+        platform_slug: [linux-amd64, linux-arm64]
         include:
-          - runner: self-hosted
+          - platform_slug: linux-amd64
             target_platform: linux/amd64
-            platform_slug: linux-amd64
-          - runner: [self-hosted, arm64]
+            runner: self-hosted
+          - platform_slug: linux-arm64
             target_platform: linux/arm64
-            platform_slug: linux-arm64
+            runner: [self-hosted, arm64]
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
@@ -426,10 +428,11 @@ jobs:
     needs:
       - version
       - container-manifest
+      - container-manifest-matrix
     # Also trigger after matrix manifest when python_versions is set
     if: >
       always() &&
-      (needs.container-manifest.result == 'success' || needs.container-manifest.result == 'skipped') &&
+      (needs.container-manifest.result == 'success' || needs.container-manifest-matrix.result == 'success') &&
       (
         github.ref_name == github.event.repository.default_branch ||
         startsWith(github.ref_name, 'patch-') ||
