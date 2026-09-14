@@ -5,6 +5,8 @@
 #
 #   jobs:
 #     release:
+#       permissions:
+#         contents: write
 #       uses: kewilson-ssai/cicd/.github/workflows/release.yml@main
 #       with:
 #         version_override: ${{ inputs.version_override || '' }}
@@ -128,7 +130,8 @@ jobs:
         id: package-archive
         run: |
           ARCHIVE_NAME="${PROJECT_NAME}-${VERSION}.tar.gz"
-          tar --exclude='./.git' -czf "${ARCHIVE_NAME}" .
+          tar --exclude='./.git' --exclude="./${ARCHIVE_NAME}" --exclude="${ARCHIVE_NAME}" -czf "/tmp/${ARCHIVE_NAME}" .
+          mv "/tmp/${ARCHIVE_NAME}" .
           echo "archive_name=${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Create Tag and Release

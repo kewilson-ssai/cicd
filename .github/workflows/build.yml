@@ -18,8 +18,13 @@ on:
         required: false
         default: ''
 
+permissions:
+  contents: write
+
 jobs:
   release:
+    permissions:
+      contents: write
     uses: ./.github/workflows/release_only.yml
     with:
       version_override: ${{ inputs.version_override || '' }}
