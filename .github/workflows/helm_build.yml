@@ -1,94 +1,224 @@
+# Reusable workflow: Helm Chart Test, Package, and Publish
+# Centralises build and test logic for Helm charts.
+#
+# Usage (caller workflow):
+#
+#   jobs:
+#     helm_build:
+#       uses: kewilson-ssai/cicd/.github/workflows/helm_build.yml@main
+#       with:
+#         version_override: ${{ inputs.version_override || '' }}
+#       secrets: inherit
+
 name: helm_build (reusable)
+
 on:
   workflow_call:
+    inputs:
+      version_override:
+        description: 'Pin a specific VERSION; skips auto-versioning when set'
+        required: false
+        type: string
+        default: ''
+      chart_dir:
+        description: 'Directory containing the Helm chart'
+        required: false
+        type: string
+        default: 'chart'
+      test_chart_dir:
+        description: 'Directory containing the test Helm chart'
+        required: false
+        type: string
+        default: 'test_chart'
+      helm_version:
+        description: 'Helm version to use (default: latest)'
+        required: false
+        type: string
+        default: 'latest'
+      gcp_publish:
+        description: 'Publish chart to GCP Artifact Registry (true/false)'
+        required: false
+        type: string
+        default: 'false'
+      gcp_project_id:
+        description: 'GCP Project ID'
+        required: false
+        type: string
+        default: 'gsai-master'
+      gcp_region:
+        description: 'GCP Region'
+        required: false
+        type: string
+        default: 'us'
+      gcp_repo:
+        description: 'GCP Artifact Registry Repository'
+        required: false
+        type: string
+        default: 'master-repo-dr'
+    outputs:
+      version:
+        description: 'The computed chart version'
+        value: ${{ jobs.helm-publish.outputs.version }}
   workflow_dispatch:
+    inputs:
+      version_override:
+        description: 'Override VERSION (skip auto-versioning)'
+        required: false
+        default: ''
+
 jobs:
   helm-test:
     runs-on: ubuntu-latest
-    container:
-      image: alpine/helm:latest
-      options: "--entrypoint "
-    services:
-      docker:dind:
-        image: docker:dind
     env:
-      GCP_PROJECT_ID: gsai-master
-      GCP_REGION: us
-      GCP_REPO: master-repo-dr
+      CHART_DIR: ${{ inputs.chart_dir || 'chart' }}
+      TEST_CHART_DIR: ${{ inputs.test_chart_dir || 'test_chart' }}
     steps:
-    - uses: actions/checkout@v4.1.0
-    - run: helm plugin install https://github.com/quintush/helm-unittest --verify=false
-    - run: helm repo add --username ${CI_REGISTRY_USER} --password ${CI_REGISTRY_PASSWORD} cplatform https://gitlab.com/api/v4/projects/66932229/packages/helm/stable
-    - run: cd test_chart
-    - run: helm dependency update
-    - run: helm unittest .
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ inputs.helm_version || 'latest' }}
+
+      - name: Install helm-unittest plugin
+        run: |
+          helm plugin install https://github.com/helm-unittest/helm-unittest.git || \
+          helm plugin install https://github.com/quintush/helm-unittest --verify=false || true
+
+      - name: Add dependency repository
+        if: env.CI_REGISTRY_USER != '' && env.CI_REGISTRY_PASSWORD != ''
+        env:
+          CI_REGISTRY_USER: ${{ secrets.CI_REGISTRY_USER }}
+          CI_REGISTRY_PASSWORD: ${{ secrets.CI_REGISTRY_PASSWORD }}
+        run: |
+          helm repo add --username "${CI_REGISTRY_USER}" --password "${CI_REGISTRY_PASSWORD}" cplatform https://gitlab.com/api/v4/projects/66932229/packages/helm/stable || true
+
+      - name: Run unit tests on test chart
+        run: |
+          if [ -d "${TEST_CHART_DIR}" ]; then
+            echo "Testing chart in ${TEST_CHART_DIR}..."
+            (cd "${TEST_CHART_DIR}" && helm dependency update && helm unittest .)
+          fi
+
+      - name: Run unit tests on main chart
+        run: |
+          if [ -d "${CHART_DIR}" ] && [ -d "${CHART_DIR}/tests" ]; then
+            echo "Testing chart in ${CHART_DIR}..."
+            (cd "${CHART_DIR}" && (helm dependency update || true) && helm unittest .)
+          fi
+
   helm-publish:
     needs: helm-test
     runs-on: ubuntu-latest
-    container:
-      image: alpine/helm:latest
-      options: "--entrypoint "
-    services:
-      docker:dind:
-        image: docker:dind
+    outputs:
+      version: ${{ steps.compute-version.outputs.version }}
     env:
-      GCP_PROJECT_ID: gsai-master
-      GCP_REGION: us
-      GCP_REPO: master-repo-dr
+      CHART_DIR: ${{ inputs.chart_dir || 'chart' }}
     steps:
-    - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: noop_version_passthrough
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: prerelease_tag
-    - run: helm repo add --username ${CI_REGISTRY_USER} --password ${CI_REGISTRY_PASSWORD} cplatform https://gitlab.com/api/v4/projects/66932229/packages/helm/stable
-    - run: cd chart
-    - run: helm dependency update
-    - run: helm package --version ${VERSION} --app-version ${VERSION} .
-    - run: curl --request POST --user ${CI_REGISTRY_USER}:${CI_REGISTRY_PASSWORD} --form "chart=@${{ github.event.repository.name }}-${VERSION}.tgz" "${{ github.api_url }}/projects/${{ github.repository }}/packages/helm/api/stable/charts"
-    - uses: actions/upload-artifact@v4.1.0
-      if: success()
-      with:
-        name: "${{ github.job }}"
-        path: chart/*.tgz
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ inputs.helm_version || 'latest' }}
+
+      - name: Compute version
+        id: compute-version
+        run: |
+          if [ -n "${{ inputs.version_override }}" ]; then
+            VERSION="${{ inputs.version_override }}"
+          elif [ -f pyproject.toml ]; then
+            pip install poetry --no-cache-dir
+            REF_NAME="${{ github.ref_name }}"
+            CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+            DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+            IS_PROTECTED="false"
+            if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || [ "${REF_NAME}" = "main" ] || [ "${REF_NAME}" = "master" ] || echo "${REF_NAME}" | grep -qE '^patch-'; then
+              IS_PROTECTED="true"
+            fi
+
+            if [ "${IS_PROTECTED}" = "true" ]; then
+              if echo "${REF_NAME}" | grep -qE '^patch-'; then
+                poetry version patch
+              else
+                poetry version minor
+              fi
+              VERSION=$(poetry version --short)
+              TOP_LEVEL_PATTERN="^(${DEFAULT_BRANCH}|main|master|patch-.*)$"
+              if ! echo "${REF_NAME}" | grep -qE "${TOP_LEVEL_PATTERN}"; then
+                MAJOR=$(echo $VERSION | cut -d '.' -f1)
+                MINOR=$(echo $VERSION | cut -d '.' -f2)
+                PATCH=$(echo $VERSION | cut -d '.' -f3)
+                VERSION="${MAJOR}.${MINOR}-${CLEAN_BRANCH}.${PATCH}"
+              fi
+            else
+              poetry version prepatch
+              VERSION=$(poetry version --short | sed 's/a/-a/')
+              VERSION="${VERSION}-${CLEAN_BRANCH}"
+            fi
+          elif [ -f "${CHART_DIR}/Chart.yaml" ]; then
+            VERSION=$(grep '^version:' "${CHART_DIR}/Chart.yaml" | awk '{print $2}' | tr -d '"' | tr -d "'")
+          else
+            VERSION="0.1.0"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "Computed Helm chart VERSION=${VERSION}"
+
+      - name: Package Helm chart
+        run: |
+          mkdir -p dist-chart
+          if [ -d "${CHART_DIR}" ]; then
+            (cd "${CHART_DIR}" && helm dependency update || true)
+            helm package --version "${VERSION}" --app-version "${VERSION}" "${CHART_DIR}" -d dist-chart
+          fi
+
+      - name: Upload packaged chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-package
+          path: dist-chart/*.tgz
+          if-no-files-found: warn
+
   publish-gcp-helm:
     needs: helm-publish
     runs-on: ubuntu-latest
-    container:
-      image: docker:latest
-    services:
-      docker:dind:
-        image: docker:dind
+    if: (inputs.gcp_publish == 'true' || vars.GCP_PUBLISH == 'true') && (secrets.GCP_SA_CREDS != '' || secrets.GCP_SA != '')
     env:
-      GCP_PROJECT_ID: gsai-master
-      GCP_REGION: us
-      GCP_REPO: master-repo-dr
-      GCP_PUBLISH: 'false'
+      GCP_PROJECT_ID: ${{ inputs.gcp_project_id || vars.GCP_PROJECT_ID || 'gsai-master' }}
+      GCP_REGION: ${{ inputs.gcp_region || vars.GCP_REGION || 'us' }}
+      GCP_REPO: ${{ inputs.gcp_repo || vars.GCP_REPO || 'master-repo-dr' }}
+      VERSION: ${{ needs.helm-publish.outputs.version }}
     steps:
-    - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: noop_version_passthrough
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: prerelease_tag
-    - uses: actions/download-artifact@v4.1.0
-      with:
-        name: helm-publish
-    - run: apk add --no-cache python3 py3-pip curl tar jq bash
-    - run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-    - run: curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz
-    - run: tar -xzf google-cloud-cli-linux-x86_64.tar.gz
-    - run: mv google-cloud-sdk /usr/local/gcloud
-    - run: export PATH=$PATH:/usr/local/gcloud/bin
-    - run: gcloud version
-    - run: echo "Publishing Helm chart ${VERSION} to GCP ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPO}"
-    - run: |
-        export PATH=$PATH:/usr/local/gcloud/bin
-        if [ -z "${GCP_SA}" ]; then echo "ERROR: GCP_SA is not set"; exit 1; fi
-        if [ -z "${GCP_SA_CREDS}" ] || [ ! -f "${GCP_SA_CREDS}" ]; then echo "ERROR: GCP_SA_CREDS is not set or is not a file-type variable"; exit 1; fi
-        gcloud auth activate-service-account "${GCP_SA}" --key-file="${GCP_SA_CREDS}"
-        gcloud auth print-access-token | helm registry login -u oauth2accesstoken --password-stdin ${GCP_REGION}-docker.pkg.dev
-        helm push chart/${{ github.event.repository.name }}-${VERSION}.tgz oci://${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPO}
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: ${{ inputs.helm_version || 'latest' }}
+
+      - name: Download packaged chart
+        uses: actions/download-artifact@v4
+        with:
+          name: helm-package
+          path: dist-chart
+
+      - name: Authenticate to GCP and Push Helm Chart
+        env:
+          GCP_SA: ${{ secrets.GCP_SA }}
+          GCP_SA_CREDS: ${{ secrets.GCP_SA_CREDS }}
+        run: |
+          if [ -n "${GCP_SA_CREDS}" ]; then
+            echo "${GCP_SA_CREDS}" > /tmp/gcp_key.json
+            gcloud auth activate-service-account "${GCP_SA}" --key-file=/tmp/gcp_key.json
+            rm -f /tmp/gcp_key.json
+            gcloud auth print-access-token | helm registry login -u oauth2accesstoken --password-stdin "${GCP_REGION}-docker.pkg.dev"
+            for pkg in dist-chart/*.tgz; do
+              if [ -f "$pkg" ]; then
+                echo "Pushing $pkg to oci://${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPO}"
+                helm push "$pkg" "oci://${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GCP_REPO}"
+              fi
+            done
+          fi

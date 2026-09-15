@@ -60,6 +60,28 @@ on:
         required: false
         type: string
         default: '7.1.0'
+      version_override:
+        description: 'Pin a specific VERSION; skips auto-versioning when set'
+        required: false
+        type: string
+        default: ''
+      pypi_publish:
+        description: 'Publish package to PyPI / package repository (true/false)'
+        required: false
+        type: string
+        default: 'false'
+      pypi_repository_url:
+        description: 'Target repository URL for twine upload (optional)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      version:
+        description: 'The computed release version'
+        value: ${{ jobs.build_python_module.outputs.version }}
+      project_name:
+        description: 'The project name from poetry/pyproject.toml'
+        value: ${{ jobs.build_python_module.outputs.project_name }}
   workflow_dispatch:
     inputs:
       python_version:
@@ -67,6 +89,11 @@ on:
         required: false
         type: string
         default: '3.13'
+      version_override:
+        description: 'Override VERSION (skip auto-versioning)'
+        required: false
+        default: ''
+
 jobs:
   test_python_module:
     runs-on: ubuntu-latest
@@ -84,151 +111,224 @@ jobs:
       COVERAGE_SOURCE: ${{ inputs.coverage_source || '.' }}
       PYTEST_VERSION: ${{ inputs.pytest_version || '9.0.3' }}
       PYTEST_COV_VERSION: ${{ inputs.pytest_cov_version || '7.1.0' }}
-      TEAMS_WEBHOOK_URL: https://default068aeee17ab641db8b6949fd4421d5.f8.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/25/workflows/34c094c552b446629cdad4759054e10c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=3OpokvKh7eFsjk0WWU-TVAyxJGVe8QYRh1wEz2i4zSI
     steps:
-    - uses: actions/checkout@v4.1.0
-    - run: |
-        set -e
-        if [ "$USE_POETRY" = "TRUE" ]; then
-          pip install poetry --no-cache-dir
-          poetry config http-basic.gitlab gitlab-ci-token "${{ github.token }}"
-          poetry install
-          poetry run pip install "pytest==${PYTEST_VERSION}" "pytest-cov==${PYTEST_COV_VERSION}"
-          poetry run pytest . \
-            --cov="${COVERAGE_SOURCE}" \
-            --cov-report=xml:coverage.xml \
-            --junitxml=test-results.xml || rc=$?
-        else
-          pip install -r "${REQUIREMENTS_FILE}" --no-cache-dir
-          if [ -n "${TEST_REQUIREMENTS_FILE}" ]; then
-            pip install -r "${TEST_REQUIREMENTS_FILE}" --no-cache-dir
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Python unit tests
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN || secrets.CI_JOB_TOKEN }}
+        run: |
+          set -e
+          if [ "$SKIP_TEST" = "TRUE" ]; then
+            echo "*** Skipping tests as requested ***"
+            exit 0
           fi
-          pip install "pytest==${PYTEST_VERSION}" "pytest-cov==${PYTEST_COV_VERSION}" --no-cache-dir
-          pytest \
-            --cov="${COVERAGE_SOURCE}" \
-            --cov-report=xml:coverage.xml \
-            --junitxml=test-results.xml || rc=$?
-        fi
-        rc=${rc:-0}
-        [ "$rc" -eq 5 ] && { echo "*** No Unit tests ***"; exit 0; }
-        [ "$rc" -eq 0 ] && { echo "*** Unit Tests Passed ***"; exit 0; }
-        echo "*** Unit Tests Failed ***"; exit 1
-    - uses: actions/upload-artifact@v4.1.0
-      if: always()
-      with:
-        name: "${{ github.job }}"
-        retention-days: 7
-        path: |-
-          coverage.xml
-          test-results.xml
+
+          if [ "$USE_POETRY" = "TRUE" ]; then
+            pip install poetry --no-cache-dir
+            if [ -n "${GITLAB_TOKEN}" ]; then
+              poetry config http-basic.gitlab gitlab-ci-token "${GITLAB_TOKEN}"
+            fi
+            poetry install
+            poetry run pip install "pytest==${PYTEST_VERSION}" "pytest-cov==${PYTEST_COV_VERSION}"
+            poetry run pytest . \
+              --cov="${COVERAGE_SOURCE}" \
+              --cov-report=xml:coverage.xml \
+              --junitxml=test-results.xml || rc=$?
+          else
+            pip install -r "${REQUIREMENTS_FILE}" --no-cache-dir
+            if [ -n "${TEST_REQUIREMENTS_FILE}" ] && [ -f "${TEST_REQUIREMENTS_FILE}" ]; then
+              pip install -r "${TEST_REQUIREMENTS_FILE}" --no-cache-dir
+            fi
+            pip install "pytest==${PYTEST_VERSION}" "pytest-cov==${PYTEST_COV_VERSION}" --no-cache-dir
+            pytest \
+              --cov="${COVERAGE_SOURCE}" \
+              --cov-report=xml:coverage.xml \
+              --junitxml=test-results.xml || rc=$?
+          fi
+
+          rc=${rc:-0}
+          [ "$rc" -eq 5 ] && { echo "*** No Unit tests found ***"; exit 0; }
+          [ "$rc" -eq 0 ] && { echo "*** Unit Tests Passed ***"; exit 0; }
+          echo "*** Unit Tests Failed ***"; exit 1
+
+      - name: Upload test results and coverage artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            coverage.xml
+            test-results.xml
+
   build_python_module:
     needs: test_python_module
     runs-on: ubuntu-latest
     container:
       image: ${{ inputs.python_container || vars.PYTHON_CONTAINER || (inputs.python_version && format('python:{0}', inputs.python_version)) || (vars.PYTHON_VERSION && format('python:{0}', vars.PYTHON_VERSION)) || 'python:3.13' }}
+    outputs:
+      version: ${{ steps.compute-version.outputs.version }}
+      project_name: ${{ steps.compute-version.outputs.project_name }}
     env:
       PYTHON_VERSION: ${{ inputs.python_version || vars.PYTHON_VERSION || '3.13' }}
-      GOOGLE_APPLICATION_CREDENTIALS: "$HOME/gcp_sa.json"
-      GOOGLE_PROJECT: gsai-master
-      TF_LOG: INFO
-      SKIP_TEST: ${{ inputs.skip_test || 'FALSE' }}
       USE_POETRY: ${{ inputs.use_poetry || 'TRUE' }}
-      REQUIREMENTS_FILE: ${{ inputs.requirements_file || 'requirements.txt' }}
-      TEST_REQUIREMENTS_FILE: ${{ inputs.test_requirements_file || '' }}
-      COVERAGE_SOURCE: ${{ inputs.coverage_source || '.' }}
-      PYTEST_VERSION: ${{ inputs.pytest_version || '9.0.3' }}
-      PYTEST_COV_VERSION: ${{ inputs.pytest_cov_version || '7.1.0' }}
-      TEAMS_WEBHOOK_URL: https://default068aeee17ab641db8b6949fd4421d5.f8.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/25/workflows/34c094c552b446629cdad4759054e10c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=3OpokvKh7eFsjk0WWU-TVAyxJGVe8QYRh1wEz2i4zSI
     steps:
-    - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v4.1.0
-    - run: pip install poetry --no-cache-dir
-    - run: poetry config http-basic.gitlab gitlab-ci-token ${{ github.token }}
-    - run: if [[ "${{ github.ref }}" == "${CI_DEFAULT_BRANCH}" ]];then poetry version minor ;elif [[ "${{ github.ref }}" == patch* ]];then  poetry version patch; else poetry version prepatch ; fi
-    - run: poetry env use ${PYTHON_VERSION}
-    - run: echo " *** Building python module! *** "
-    - run: poetry install
-    - run: poetry build
-    - uses: actions/upload-artifact@v4.1.0
-      if: success()
-      with:
-        name: "${{ github.job }}"
-        path: dist/*
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Compute version and build package
+        id: compute-version
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN || secrets.CI_JOB_TOKEN }}
+        run: |
+          set -e
+          pip install poetry --no-cache-dir
+          if [ -n "${GITLAB_TOKEN}" ]; then
+            poetry config http-basic.gitlab gitlab-ci-token "${GITLAB_TOKEN}"
+          fi
+
+          if [ -n "${{ inputs.version_override }}" ]; then
+            VERSION="${{ inputs.version_override }}"
+            if [ -f pyproject.toml ]; then
+              poetry version "${VERSION}"
+            fi
+          elif [ -f pyproject.toml ]; then
+            REF_NAME="${{ github.ref_name }}"
+            CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
+            DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+            IS_PROTECTED="false"
+            if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] || [ "${REF_NAME}" = "main" ] || [ "${REF_NAME}" = "master" ] || echo "${REF_NAME}" | grep -qE '^patch-'; then
+              IS_PROTECTED="true"
+            fi
+
+            if [ "${IS_PROTECTED}" = "true" ]; then
+              if echo "${REF_NAME}" | grep -qE '^patch-'; then
+                poetry version patch
+              else
+                poetry version minor
+              fi
+              VERSION=$(poetry version --short)
+              TOP_LEVEL_PATTERN="^(${DEFAULT_BRANCH}|main|master|patch-.*)$"
+              if ! echo "${REF_NAME}" | grep -qE "${TOP_LEVEL_PATTERN}"; then
+                MAJOR=$(echo $VERSION | cut -d '.' -f1)
+                MINOR=$(echo $VERSION | cut -d '.' -f2)
+                PATCH=$(echo $VERSION | cut -d '.' -f3)
+                VERSION="${MAJOR}.${MINOR}-${CLEAN_BRANCH}.${PATCH}"
+              fi
+            else
+              poetry version prepatch
+              VERSION=$(poetry version --short | sed 's/a/-a/')
+              VERSION="${VERSION}-${CLEAN_BRANCH}"
+            fi
+          else
+            VERSION="0.1.0"
+          fi
+
+          PROJECT_NAME="unnamed"
+          if [ -f pyproject.toml ]; then
+            PROJECT_NAME=$(poetry version | awk '{print $1}')
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "project_name=${PROJECT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Computed VERSION=${VERSION} for PROJECT_NAME=${PROJECT_NAME}"
+
+          echo " *** Building python module! *** "
+          if [ "$USE_POETRY" = "TRUE" ]; then
+            poetry install || true
+            poetry build
+          else
+            pip install build --no-cache-dir
+            python -m build
+          fi
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: warn
+
   publish_python_module:
     needs: build_python_module
     runs-on: ubuntu-latest
     container:
       image: ${{ inputs.python_container || vars.PYTHON_CONTAINER || (inputs.python_version && format('python:{0}', inputs.python_version)) || (vars.PYTHON_VERSION && format('python:{0}', vars.PYTHON_VERSION)) || 'python:3.13' }}
-    if: github.event_name == 'workflow_dispatch'
-    env:
-      PYTHON_VERSION: ${{ inputs.python_version || vars.PYTHON_VERSION || '3.13' }}
-      GOOGLE_APPLICATION_CREDENTIALS: "$HOME/gcp_sa.json"
-      GOOGLE_PROJECT: gsai-master
-      TF_LOG: INFO
-      SKIP_TEST: ${{ inputs.skip_test || 'FALSE' }}
-      USE_POETRY: ${{ inputs.use_poetry || 'TRUE' }}
-      REQUIREMENTS_FILE: ${{ inputs.requirements_file || 'requirements.txt' }}
-      TEST_REQUIREMENTS_FILE: ${{ inputs.test_requirements_file || '' }}
-      COVERAGE_SOURCE: ${{ inputs.coverage_source || '.' }}
-      PYTEST_VERSION: ${{ inputs.pytest_version || '9.0.3' }}
-      PYTEST_COV_VERSION: ${{ inputs.pytest_cov_version || '7.1.0' }}
-      TEAMS_WEBHOOK_URL: https://default068aeee17ab641db8b6949fd4421d5.f8.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/25/workflows/34c094c552b446629cdad4759054e10c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=3OpokvKh7eFsjk0WWU-TVAyxJGVe8QYRh1wEz2i4zSI
+    if: (inputs.pypi_publish == 'true' || vars.PYPI_PUBLISH == 'true' || github.event_name == 'workflow_dispatch') && (secrets.TWINE_PASSWORD != '' || secrets.PYPI_TOKEN != '')
     steps:
-    - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v4.1.0
-    - run: pip install twine
-    - run: echo " *** Publish build artifacts to GitLab Artifactory Registry *** "
-    - run: TWINE_PASSWORD=${{ github.token }} TWINE_USERNAME=gitlab-ci-token python -m twine upload --verbose --repository-url ${{ github.api_url }}/projects/${{ github.repository }}/packages/pypi dist/*
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish build artifacts to PyPI / Package Registry
+        env:
+          TWINE_USERNAME: ${{ secrets.TWINE_USERNAME || '__token__' }}
+          TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD || secrets.PYPI_TOKEN }}
+          TWINE_REPOSITORY_URL: ${{ inputs.pypi_repository_url || vars.PYPI_REPOSITORY_URL || '' }}
+        run: |
+          pip install twine --no-cache-dir
+          echo " *** Publishing Python package artifacts *** "
+          EXTRA_ARGS=()
+          if [ -n "${TWINE_REPOSITORY_URL}" ]; then
+            EXTRA_ARGS+=(--repository-url "${TWINE_REPOSITORY_URL}")
+          fi
+          python -m twine upload --verbose "${EXTRA_ARGS[@]}" dist/*
+
   notify_pipeline_failure:
-    needs: publish_python_module
+    needs: [test_python_module, build_python_module, publish_python_module]
     runs-on: ubuntu-latest
-    container:
-      image: curlimages/curl:latest
-    env:
-      PYTHON_VERSION: ${{ inputs.python_version || vars.PYTHON_VERSION || '3.13' }}
-      GOOGLE_APPLICATION_CREDENTIALS: "$HOME/gcp_sa.json"
-      GOOGLE_PROJECT: gsai-master
-      TF_LOG: INFO
-      SKIP_TEST: ${{ inputs.skip_test || 'FALSE' }}
-      USE_POETRY: ${{ inputs.use_poetry || 'TRUE' }}
-      REQUIREMENTS_FILE: ${{ inputs.requirements_file || 'requirements.txt' }}
-      TEST_REQUIREMENTS_FILE: ${{ inputs.test_requirements_file || '' }}
-      COVERAGE_SOURCE: ${{ inputs.coverage_source || '.' }}
-      PYTEST_VERSION: ${{ inputs.pytest_version || '9.0.3' }}
-      PYTEST_COV_VERSION: ${{ inputs.pytest_cov_version || '7.1.0' }}
-      TEAMS_WEBHOOK_URL: https://default068aeee17ab641db8b6949fd4421d5.f8.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/25/workflows/34c094c552b446629cdad4759054e10c/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=3OpokvKh7eFsjk0WWU-TVAyxJGVe8QYRh1wEz2i4zSI
+    if: always() && (needs.test_python_module.result == 'failure' || needs.build_python_module.result == 'failure' || needs.publish_python_module.result == 'failure')
     steps:
-    - uses: actions/checkout@v4.1.0
-    - uses: actions/download-artifact@v4.1.0
-    - run: |
-        cat > card.json <<EOF
-        {
-          "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-          "type": "AdaptiveCard",
-          "version": "1.5",
-          "body": [
-            {
-              "type": "TextBlock",
-              "text": "CI/CD Job Failed",
-              "weight": "Bolder",
-              "size": "Medium",
-              "color": "Attention"
-            },
-            {
-              "type": "FactSet",
-              "facts": [
-                { "title": "Repository", "value": "${{ github.repository }}" },
-                { "title": "Job", "value": "Pipeline #${{ github.repository}}/${{ github.workflow }} on ${{ github.ref }}" }
-              ]
-            }
-          ],
-          "actions": [
-            {
-              "type": "Action.OpenUrl",
-              "title": "View Job Logs",
-              "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            }
-          ]
-        }
-        EOF
-    - run: 'curl -sS --fail-with-body -X POST "${TEAMS_WEBHOOK_URL}" -H "Content-Type: application/json" -d @card.json'
+      - name: Send Teams failure notification
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL || vars.TEAMS_WEBHOOK_URL || '' }}
+        run: |
+          if [ -z "${TEAMS_WEBHOOK_URL}" ]; then
+            echo "TEAMS_WEBHOOK_URL is not set, skipping notification."
+            exit 0
+          fi
+          cat > card.json <<EOF
+          {
+            "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.5",
+            "body": [
+              {
+                "type": "TextBlock",
+                "text": "CI/CD Job Failed",
+                "weight": "Bolder",
+                "size": "Medium",
+                "color": "Attention"
+              },
+              {
+                "type": "FactSet",
+                "facts": [
+                  { "title": "Repository", "value": "${{ github.repository }}" },
+                  { "title": "Job", "value": "Pipeline #${{ github.repository }}/${{ github.workflow }} on ${{ github.ref }}" }
+                ]
+              }
+            ],
+            "actions": [
+              {
+                "type": "Action.OpenUrl",
+                "title": "View Job Logs",
+                "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }
+            ]
+          }
+          EOF
+          curl -sS --fail-with-body -X POST "${TEAMS_WEBHOOK_URL}" -H "Content-Type: application/json" -d @card.json || true
