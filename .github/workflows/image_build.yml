@@ -617,7 +617,6 @@ jobs:
           echo "Running container-structure-test for ${{ matrix.target_platform }} on ${TEST_IMAGE}"
           container-structure-test test \
             --image "${TEST_IMAGE}" \
-            --platform "${{ matrix.target_platform }}" \
             --config "${{ inputs.structure_test_config }}"
 
   # ── Optional Container Test (multi-Python-version) ──────────────────────────
@@ -698,7 +697,6 @@ jobs:
           echo "Running container-structure-test for Python ${{ matrix.python_version }} (${{ matrix.target_platform }})"
           container-structure-test test \
             --image "${TEST_IMAGE}" \
-            --platform "${{ matrix.target_platform }}" \
             --config "${{ inputs.structure_test_config }}"
 
   # ── Security Scan ───────────────────────────────────────────────────────────
