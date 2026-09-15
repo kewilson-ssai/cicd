@@ -598,6 +598,7 @@ jobs:
             CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
             TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${CLEAN_BRANCH}-latest"
           fi
+          echo "TEST_IMAGE=${TEST_IMAGE}" >> "$GITHUB_ENV"
 
           echo "Testing image: ${TEST_IMAGE} on platform ${{ matrix.target_platform }}"
           docker pull --platform ${{ matrix.target_platform }} "${TEST_IMAGE}"
@@ -678,6 +679,7 @@ jobs:
             CLEAN_BRANCH=$(echo "${REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g' | tr '[:upper:]' '[:lower:]')
             TEST_IMAGE="${REGISTRY}/${{ inputs.image_name }}:${PY_VER}-${CLEAN_BRANCH}-latest"
           fi
+          echo "TEST_IMAGE=${TEST_IMAGE}" >> "$GITHUB_ENV"
 
           echo "Testing image: ${TEST_IMAGE} on platform ${{ matrix.target_platform }}"
           docker pull --platform ${{ matrix.target_platform }} "${TEST_IMAGE}"
